@@ -24,6 +24,7 @@ import {
   claimMailboxDelivery,
   findTeamByParticipant,
   invalidateTaskAttempt,
+  processRuntimeId,
   readTeam,
   readUnreadMailbox,
   releaseMailboxDelivery,
@@ -31,6 +32,13 @@ import {
   withTeamLock,
   writeTeam,
 } from './state.ts'
+import {
+  decideAttemptDisposition,
+  parkAttempt,
+  refreshAttemptHeartbeat,
+  resumeAttempt,
+  type AttemptDisposition,
+} from './attempts.ts'
 import type { TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
@@ -256,12 +264,9 @@ function fallbackMailboxPrompt(messages: Awaited<ReturnType<typeof readUnreadMai
 /** Install one scheduler and its member activity observer. */
 export function installTeamScheduler(ctx: Context, config: SchedulerConfig): TeamScheduler {
   const memberQueues = new Map<string, Promise<unknown>>()
-  // An idle edge in this process proves that the resident member ended its
-  // turn while the current attempt was still open. Remember that capability
-  // even after Harness disposes the continuable AgentHandle: later status or
-  // graph kicks must keep it parked. A cold process starts with an empty map,
-  // so durable open attempts are still recovered after restart.
-  const parkedAttempts = new Map<string, string>()
+  // Attempt park/recovery state lives on the task record (durable), not here.
+  // This process's runtime id distinguishes its own parked attempts from a
+  // cold process's open work (see src/attempts.ts).
 
   const memberQueueKey = (stateRoot: string, teamId: string, memberName: string): string => (
     `${stateRoot}\u0000${teamId}\u0000${memberName}`
@@ -341,16 +346,44 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           // A resident idle member can intentionally leave an attempt open
           // while waiting for guidance, or because the user paused its turn.
           // Re-dispatching here would revoke still-valid work on every idle
-          // edge and every status kick. The idle observer remembers that exact
-          // capability across normal continuable disposal; only an unobserved
-          // durable capability (cold process recovery) or a legacy open task
-          // with no capability is retried.
-          const parkedAttemptId = parkedAttempts.get(currentMember.id)
-          const recoverOwned = owned !== undefined
-            && (owned.attemptId === undefined || owned.attemptId !== parkedAttemptId)
-          const task = recoverOwned ? owned : owned === undefined
-            ? nextReadyTask(fresh.tasks, currentMember.name)
-            : undefined
+          // edge and every status kick. The disposition comes from durable
+          // attempt fields + live registry facts, not process memory: a cold
+          // process (different runtime id) or a stale heartbeat recovers, a
+          // parked attempt stays parked until the captain messages it.
+          const live = liveMember(ctx, currentMember)
+          const disposition: AttemptDisposition = owned === undefined
+            ? 'keep'
+            : decideAttemptDisposition(owned, {
+                runtimeId: processRuntimeId(),
+                ownerResident: live !== undefined,
+                ownerStatus: live === undefined ? 'absent' : live.status === 'idle' ? 'idle' : 'running',
+                now: Date.now(),
+              })
+          let task: TeamTask | undefined
+          if (owned !== undefined) {
+            if (disposition === 'parked') {
+              if (currentMember.status !== 'idle') {
+                currentMember.status = 'idle'
+                await writeTeam(stateRoot, fresh)
+              }
+              return undefined
+            }
+            if (disposition === 'keep') {
+              // Same runtime, member just became idle: park durably. Only a
+              // captain message may resume this exact capability.
+              parkAttempt(owned, Date.now())
+              if (currentMember.status !== 'idle') {
+                currentMember.status = 'idle'
+                await writeTeam(stateRoot, fresh)
+              } else {
+                await writeTeam(stateRoot, fresh)
+              }
+              return undefined
+            }
+            task = owned // recover (cold runtime / stale heartbeat / legacy)
+          } else {
+            task = nextReadyTask(fresh.tasks, currentMember.name)
+          }
           if (task === undefined) {
             if (currentMember.status !== 'idle') {
               currentMember.status = 'idle'
@@ -360,7 +393,6 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           }
           const previousAssignee = task.assignee
           const attemptId = beginTaskAttempt(task, currentMember.name)
-          parkedAttempts.delete(currentMember.id)
           currentMember.status = 'working'
           await writeTeam(stateRoot, fresh)
           const profileSeedId = taskProfileSeedId(task)
@@ -416,6 +448,11 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           task.status = 'pending'
           task.assignee = ticket.previousAssignee
           task.attemptId = undefined
+          task.attemptStartedAt = undefined
+          task.attemptHeartbeatAt = undefined
+          task.attemptRuntimeId = undefined
+          task.attemptParked = false
+          task.attemptParkedAt = undefined
           task.handoffId = undefined
           task.reassigning = false
           task.updatedAt = Date.now()
@@ -431,10 +468,7 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
     const workspace = agent.session.header.cwd ?? process.cwd()
     const stateRoot = stateRootOf(workspace, config)
     const located = await findTeamByParticipant(stateRoot, agent.id)
-    if (located === undefined) {
-      parkedAttempts.delete(agent.id)
-      return
-    }
+    if (located === undefined) return
     if (located.captainSessionId === agent.id) {
       // Captain takeover is scoped to the captain's current turn. Unlike a
       // durable member, the captain has no scheduler lane that can resume an
@@ -462,23 +496,27 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       return
     }
     const member = located.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
-    if (member === undefined) {
-      parkedAttempts.delete(agent.id)
-      return
-    }
+    if (member === undefined) return
     await withTeamLock(teamLockKey(stateRoot, located.id), async () => {
       const fresh = await readTeam(stateRoot, located.id)
       const current = fresh?.members.find(candidate => candidate.id === agent.id && candidate.status !== 'removed')
       if (fresh === undefined || current === undefined) return
       const next = status === 'running' ? 'working' : 'idle'
+      let needsParkWrite = false
       if (next === 'idle') {
+        // Durable park: the member ended its turn while its attempt is still
+        // open. Only a captain message may resume this exact capability;
+        // every later kick/restart sees the same truthful park flag.
         const owned = ownedOpenTask(fresh.tasks, current.name)
-        if (owned?.attemptId === undefined) parkedAttempts.delete(agent.id)
-        else parkedAttempts.set(agent.id, owned.attemptId)
-      } else {
-        parkedAttempts.delete(agent.id)
+        if (owned?.attemptId !== undefined && owned.attemptParked !== true) {
+          parkAttempt(owned, Date.now())
+          needsParkWrite = true
+        }
       }
-      if (current.status === next) return
+      if (current.status === next) {
+        if (needsParkWrite) await writeTeam(stateRoot, fresh)
+        return
+      }
       current.status = next
       await writeTeam(stateRoot, fresh)
     })

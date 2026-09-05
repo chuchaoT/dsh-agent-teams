@@ -66,6 +66,7 @@ import {
   type MemberRuntimeConfig,
 } from './members.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
+import { refreshAttemptHeartbeat } from './attempts.ts'
 import { installTeamScheduler } from './scheduler.ts'
 import { resolveTeamProfile } from './profiles.ts'
 
@@ -1681,7 +1682,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (input.changedPaths !== undefined) task.changedPaths = input.changedPaths
         if (acceptanceResults !== undefined) task.acceptanceResults = acceptanceResults
         if (commandsRun !== undefined) task.commandsRun = commandsRun
-        task.updatedAt = Date.now()
+        if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+          task.updatedAt = Date.now()
+        } else {
+          // A member update is the strongest liveness signal: keep the attempt
+          // heartbeat fresh so the watchdog never recovers live work.
+          refreshAttemptHeartbeat(task, Date.now())
+        }
         const followUp = (task.status === 'failed' && (task.verdict === 'needs_revision' || task.verdict === 'reject'))
           ? applyQualityFollowUp(fresh, task)
           : undefined

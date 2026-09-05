@@ -107,6 +107,16 @@ export interface TeamTask {
   attempt?: number
   /** Capability for the current claimed/in-progress attempt. Members must present it when updating. */
   attemptId?: string
+  /** Wall-clock start of the current attempt (watchdog/diagnostics). */
+  attemptStartedAt?: number
+  /** Last liveness signal of the current attempt (updated on claim/update/idle edges). */
+  attemptHeartbeatAt?: number
+  /** Owning scheduler runtime id of the current attempt (per-process unique). */
+  attemptRuntimeId?: string
+  /** The current attempt is parked: its member went idle mid-attempt and only an explicit captain message may resume it. */
+  attemptParked?: boolean
+  /** When the current attempt was parked. */
+  attemptParkedAt?: number
   /** Opaque generation for a revocation/handoff that has not started its next attempt yet. */
   handoffId?: string
   /** A handoff is quiescing the old owner; the scheduler must not dispatch it yet. */

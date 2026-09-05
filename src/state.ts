@@ -294,13 +294,19 @@ export function transitionError(current: TaskStatus, next: TaskStatus): string |
 /** Activate the task's current generation for one owner and return its capability id. */
 export function activateTaskAttempt(task: TeamTask, assignee: string): string {
   const attemptId = randomUUID()
+  const now = Date.now()
   task.status = 'claimed'
   task.assignee = assignee
   task.attemptId = attemptId
+  task.attemptStartedAt = now
+  task.attemptHeartbeatAt = now
+  task.attemptRuntimeId = PROCESS_RUNTIME_ID
+  task.attemptParked = false
+  task.attemptParkedAt = undefined
   task.handoffId = undefined
   task.reassigning = false
   task.output = undefined
-  task.updatedAt = Date.now()
+  task.updatedAt = now
   return attemptId
 }
 
@@ -319,6 +325,8 @@ export function cancelUnfinishedTask(task: TeamTask, output?: string): void {
   if (TERMINAL_TASK_STATUSES.includes(task.status)) return
   task.status = 'cancelled'
   task.attemptId = undefined
+  task.attemptParked = false
+  task.attemptParkedAt = undefined
   task.handoffId = undefined
   task.reassigning = false
   if (output !== undefined) task.output = output
@@ -331,6 +339,11 @@ export function invalidateTaskAttempt(
   reassigning = false,
 ): void {
   task.attemptId = undefined
+  task.attemptStartedAt = undefined
+  task.attemptHeartbeatAt = undefined
+  task.attemptRuntimeId = undefined
+  task.attemptParked = false
+  task.attemptParkedAt = undefined
   task.handoffId = randomUUID()
   task.status = 'pending'
   task.assignee = nextAssignee
@@ -354,6 +367,18 @@ export async function createTeamDir(stateRoot: string, state: TeamState): Promis
 
 /** Symbol carrying the on-disk revision observed at read time. */
 const READ_REVISION = Symbol('agent-teams:read-revision')
+
+/**
+ * Per-process scheduler runtime identity. Persisted on every attempt so a
+ * cold process (or an HMR'd runtime) can distinguish its own parked attempts
+ * from another runtime's open work.
+ */
+const PROCESS_RUNTIME_ID = randomUUID()
+
+/** The current process's AgentTeams scheduler runtime id. */
+export function processRuntimeId(): string {
+  return PROCESS_RUNTIME_ID
+}
 
 /** Error raised when a write would overwrite a concurrently changed team. */
 export class TeamConcurrencyError extends Error {
