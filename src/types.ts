@@ -209,6 +209,13 @@ export interface TeamState {
   name: string
   /** Sanitized directory id; the team's stable identity. */
   id: string
+  /**
+   * Monotonic persistence generation. Present on records written by this
+   * plugin line; `readTeam`/`writeTeam` use it for compare-and-swap when a
+   * reader carries a read-revision, protecting against concurrent-process
+   * write loss. Absent on legacy records (treated as 0).
+   */
+  revision?: number
   /** Team purpose/goal. */
   description?: string
   /** Immutable named profile snapshot, when created from a profile. */

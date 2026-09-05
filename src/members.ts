@@ -20,7 +20,7 @@ import { createUserMessage, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { join } from 'node:path'
 import { acknowledgeMailbox, appendMailbox, CAPTAIN_KEY, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
-import { appendTeamEvent, captainSessionOf } from './events.ts'
+import { appendAuditedTeamEvent, captainSessionOf } from './events.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
@@ -203,18 +203,18 @@ export async function failMemberOpenAttempt(
     await writeTeam(stateRoot, team)
     await appendMailbox(stateRoot, team.id, CAPTAIN_KEY, message)
     if (task !== undefined) {
-      appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, fallbackSession), 'agent-teams/task-updated', {
+      appendAuditedTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, fallbackSession), 'agent-teams/task-updated', {
         teamId, taskId: task.id, status: task.status, assignee: memberName, output: task.output,
-      })
+      }, stateRoot, team.id)
     }
-    appendTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, fallbackSession), 'agent-teams/message-sent', {
+    appendAuditedTeamEvent(ctx, captainSessionOf(ctx, team.captainSessionId, fallbackSession), 'agent-teams/message-sent', {
       teamId: team.id,
       messageId: message.id,
       from: memberName,
       to: CAPTAIN_KEY,
       content: message.content,
       ts: message.ts,
-    })
+    }, stateRoot, team.id)
     return { captainSessionId: team.captainSessionId, message }
   })
   if (prepared === undefined) return false

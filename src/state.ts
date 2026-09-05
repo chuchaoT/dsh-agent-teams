@@ -15,7 +15,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TERMINAL_TASK_STATUSES, type TaskStatus, type TeamMember, type TeamMessage, type TeamProfileSnapshot, type TeamState, type TeamTask } from './types.ts'
 import { hasValidQualityTaskFields, isReviewPolicy, normalizeBlankOptionalTaskFields } from './quality-gates.ts'
@@ -47,9 +47,153 @@ export const CAPTAIN_KEY = 'captain'
 const MAILBOX_DELIVERY_LEASE_MS = 60_000
 /** Durable deny-list for AgentTeams members that must never be resumed. */
 const RETIRED_MEMBERS_FILE = 'retired-members.json'
+/** Append-only per-team audit event log (plugin-owned, host-independent truth). */
+export const TEAM_EVENT_LOG = 'events.jsonl'
+
+/**
+ * One durable audit record. The plugin-owned event log is the authoritative
+ * mutation trail for a team; host Session events are a best-effort surface
+ * folded by the client conversation node.
+ */
+export interface TeamEventLogEntry {
+  id: string
+  ts: number
+  teamId: string
+  type: string
+  data: unknown
+}
+
+/**
+ * Append one audit record to the team's append-only event log.
+ *
+ * Unlike `team.json` (full rewrite) the log is single-writer append-only:
+ * cost is O(1) per record and a crash can only truncate the tail of one
+ * line, never corrupt the whole file. Callers must treat failures as
+ * non-fatal — a broken audit trail must never break team tool execution.
+ */
+export async function appendTeamEventLog(
+  stateRoot: string,
+  teamId: string,
+  type: string,
+  data: unknown,
+): Promise<void> {
+  const record: TeamEventLogEntry = {
+    id: randomUUID(),
+    ts: Date.now(),
+    teamId,
+    type,
+    data,
+  }
+  await mkdir(stateRoot, { recursive: true })
+  await appendFile(join(stateRoot, teamId, TEAM_EVENT_LOG), `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+/** Read the complete durable audit log for one team (newest not assumed). */
+export async function readTeamEventLog(
+  stateRoot: string,
+  teamId: string,
+): Promise<TeamEventLogEntry[]> {
+  try {
+    const raw = await readFile(join(stateRoot, teamId, TEAM_EVENT_LOG), 'utf8')
+    const entries: TeamEventLogEntry[] = []
+    for (const line of raw.split(/\r?\n/)) {
+      if (line.trim() === '') continue
+      try {
+        const entry: unknown = JSON.parse(line)
+        if (typeof entry === 'object' && entry !== null
+          && typeof (entry as TeamEventLogEntry).type === 'string'
+          && typeof (entry as TeamEventLogEntry).teamId === 'string') {
+          entries.push(entry as TeamEventLogEntry)
+        }
+      } catch {
+        // A torn tail line (crash mid-append) must not fail the whole read.
+        continue
+      }
+    }
+    return entries
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw error
+  }
+}
 
 /** In-process per-team mutation queues (promise chains). */
 const locks = new Map<string, Promise<unknown>>()
+
+/** Lock directory prefix for the cross-process lock, under the state root. */
+const LOCK_DIR = '.locks'
+/** A lock file abandoned longer than this is considered stale. */
+const STALE_LOCK_MS = 10_000
+/** Max wait to acquire a cross-process lock before failing loudly. */
+const CROSS_PROCESS_LOCK_WAIT_MS = 20_000
+/** Poll interval while waiting for a cross-process lock. */
+const LOCK_POLL_MS = 60
+
+/**
+ * Cross-process advisory lock keyed by state root + team id.
+ *
+ * The lock file is created with `O_EXCL` (`wx`), so at most one process
+ * holds it. A file whose mtime is older than {@link STALE_LOCK_MS} is
+ * treated as abandoned (crashed holder) and reclaimed. The lock is
+ * best-effort: it prevents the common Web+Headless lost-update pattern, not
+ * a hostile writer, and does not replace the in-process queue serialization.
+ * @param stateRoot - resolved absolute state root directory.
+ * @param key - lock scope key (team id, retired-members scope, …).
+ * @param fn - the mutation to run exclusively.
+ */
+export async function withCrossProcessLock<T>(
+  stateRoot: string,
+  key: string,
+  fn: () => Promise<T>,
+  options?: { waitMs?: number; staleMs?: number },
+): Promise<T> {
+  const waitMs = options?.waitMs ?? CROSS_PROCESS_LOCK_WAIT_MS
+  const staleMs = options?.staleMs ?? STALE_LOCK_MS
+  const lockFile = join(stateRoot, LOCK_DIR, `${sanitizeKey(key)}.lock`)
+  await mkdir(join(stateRoot, LOCK_DIR), { recursive: true })
+  const deadline = Date.now() + waitMs
+  const owner = JSON.stringify({ pid: process.pid, ts: Date.now() })
+  for (;;) {
+    let handle
+    try {
+      handle = await open(lockFile, 'wx')
+    } catch (error: unknown) {
+      const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined
+      if (code !== 'EEXIST') throw error
+      // Attempt stale reclaim: the file existed. If its mtime is older than
+      // the stale window, unlink it and retry immediately.
+      try {
+        const info = await stat(lockFile)
+        if (Date.now() - info.mtimeMs > staleMs) {
+          await unlink(lockFile)
+          continue
+        }
+      } catch (statError: unknown) {
+        const statCode = statError instanceof Error && 'code' in statError
+          ? (statError as NodeJS.ErrnoException).code : undefined
+        if (statCode === 'ENOENT') continue // released between open failure and stat
+        throw statError
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`AgentTeams cross-process lock "${key}" was not released within ${waitMs}ms`)
+      }
+      await sleep(LOCK_POLL_MS)
+      continue
+    }
+    try {
+      await handle.writeFile(owner, 'utf8')
+    } finally {
+      await handle.close()
+    }
+    try {
+      return await fn()
+    } finally {
+      await unlink(lockFile).catch(() => undefined)
+    }
+  }
+}
 
 /**
  * Serialize mutations of one team across the whole process.
@@ -202,8 +346,54 @@ export function invalidateTaskAttempt(
  */
 export async function createTeamDir(stateRoot: string, state: TeamState): Promise<void> {
   const dir = join(stateRoot, state.id)
+  state.revision = 1
+  delete (state as unknown as Record<symbol, number | undefined>)[READ_REVISION]
   await mkdir(join(dir, 'inbox'), { recursive: true })
   await atomicWriteText(join(dir, 'team.json'), JSON.stringify(state, null, 2))
+}
+
+/** Symbol carrying the on-disk revision observed at read time. */
+const READ_REVISION = Symbol('agent-teams:read-revision')
+
+/** Error raised when a write would overwrite a concurrently changed team. */
+export class TeamConcurrencyError extends Error {
+  readonly teamId: string
+  readonly expectedRevision: number
+  readonly actualRevision: number
+
+  constructor(teamId: string, expectedRevision: number, actualRevision: number) {
+    super(`team "${teamId}" changed on disk (revision ${actualRevision}) while this process held revision ${expectedRevision}; refusing to overwrite it`)
+    this.name = 'TeamConcurrencyError'
+    this.teamId = teamId
+    this.expectedRevision = expectedRevision
+    this.actualRevision = actualRevision
+  }
+}
+
+/** Read the persisted revision of one team file (0 for legacy records). */
+function revisionOf(value: unknown): number {
+  if (typeof value !== 'object' || value === null) return 0
+  const revision = (value as { revision?: unknown }).revision
+  return typeof revision === 'number' && Number.isInteger(revision) && revision >= 0 ? revision : 0
+}
+
+/** Read the persisted revision of one team file (0 for legacy records). */
+async function readTeamRevision(stateRoot: string, teamId: string): Promise<number> {
+  try {
+    const raw = await readFile(join(stateRoot, teamId, 'team.json'), 'utf8')
+    return revisionOf(JSON.parse(stripLeadingBom(raw)))
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 0
+    }
+    throw error
+  }
+}
+
+/** Attach the on-disk revision to a freshly read record. */
+function attachReadRevision<T extends TeamState>(team: T, onDisk: number): T {
+  Object.defineProperty(team, READ_REVISION, { value: onDisk, enumerable: false, configurable: true })
+  return team
 }
 
 /**
@@ -219,7 +409,7 @@ export async function readTeam(stateRoot: string, teamId: string): Promise<TeamS
     if (team === undefined) {
       throw new Error(`invalid AgentTeams state in team "${teamId}"`)
     }
-    return team
+    return attachReadRevision(team, revisionOf(value))
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return undefined
@@ -228,8 +418,7 @@ export async function readTeam(stateRoot: string, teamId: string): Promise<TeamS
   }
 }
 
-/**
- * Synchronously read one team record while a continuable child is being
+/** Synchronously read one team record while a continuable child is being
  * composed. Harness requires child setup contributions to be synchronous;
  * this narrow boundary lets a cold-resumed member restore its durable model
  * selection before its first request can be published.
@@ -245,7 +434,7 @@ export function readTeamSync(stateRoot: string, teamId: string): TeamState | und
     if (team === undefined) {
       throw new Error(`invalid AgentTeams state in team "${teamId}"`)
     }
-    return team
+    return attachReadRevision(team, revisionOf(value))
   } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return undefined
@@ -255,11 +444,23 @@ export function readTeamSync(stateRoot: string, teamId: string): TeamState | und
 }
 
 /**
- * Persist one team record (inside the caller's lock).
+ * Persist one team record (inside the caller's lock) with compare-and-swap:
+ * when the record carries a read-revision (always, via {@link readTeam}), the
+ * write refuses to proceed if the on-disk revision moved — protecting teams
+ * from cross-process lost updates. The next revision is stamped before the
+ * atomic rename.
  * @param stateRoot - resolved absolute state root directory.
  * @param state - the record to persist.
+ * @throws {TeamConcurrencyError} when the on-disk revision moved.
  */
 export async function writeTeam(stateRoot: string, state: TeamState): Promise<void> {
+  const readRevision = (state as unknown as Record<symbol, number | undefined>)[READ_REVISION]
+  const onDisk = await readTeamRevision(stateRoot, state.id)
+  if (readRevision !== undefined && readRevision !== onDisk) {
+    throw new TeamConcurrencyError(state.id, readRevision, onDisk)
+  }
+  state.revision = onDisk + 1
+  delete (state as unknown as Record<symbol, number | undefined>)[READ_REVISION]
   await atomicWriteText(join(stateRoot, state.id, 'team.json'), JSON.stringify(state, null, 2))
 }
 
@@ -285,7 +486,7 @@ export async function readRetiredMemberIds(stateRoot: string): Promise<Set<strin
 export async function recordRetiredMemberIds(stateRoot: string, memberIds: readonly string[]): Promise<void> {
   const additions = memberIds.filter(id => id !== '')
   if (additions.length === 0) return
-  await withTeamLock(`retired-members:${stateRoot}`, async () => {
+  await withCrossProcessLock(stateRoot, 'retired-members', async () => {
     const retired = await readRetiredMemberIds(stateRoot)
     for (const id of additions) retired.add(id)
     await mkdir(stateRoot, { recursive: true })

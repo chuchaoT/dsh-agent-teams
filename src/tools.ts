@@ -17,7 +17,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { join } from 'node:path'
-import { appendTeamEvent, captainSessionOf } from './events.ts'
+import { appendAuditedTeamEvent, captainSessionOf } from './events.ts'
 import {
   acknowledgeMailbox,
   appendMailbox,
@@ -382,10 +382,10 @@ export async function haltTeamWork(input: {
     fresh.halted = true
     fresh.haltedAt = now
     await writeTeam(input.stateRoot, fresh)
-    appendTeamEvent(input.ctx, captainSessionOf(input.ctx, fresh.captainSessionId, input.captain.session), 'agent-teams/team-halted', {
+    appendAuditedTeamEvent(input.ctx, captainSessionOf(input.ctx, fresh.captainSessionId, input.captain.session), 'agent-teams/team-halted', {
       teamId: fresh.id,
       cancelledTasks,
-    })
+    }, input.stateRoot, fresh.id)
     return {
       teamName: fresh.name,
       cancelledTasks,
@@ -639,9 +639,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     const discarded = await withTeamLock(teamLockKey(stateRoot, teamId), async () => {
       const fresh = await requireFreshCaptainTeam(stateRoot, teamId, captain.id)
       requireStagedTeam(fresh)
-      appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/plan-discarded', {
+      appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/plan-discarded', {
         teamId: fresh.id,
-      })
+      }, stateRoot, fresh.id)
       // A staged plan owns no child sessions. Archiving releases the captain
       // immediately while retaining the rejected graph for later inspection.
       await archiveTeamDir(stateRoot, fresh.id)
@@ -770,29 +770,29 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ctx.logger.warn(`agent-teams: post-create kick failed for "${created.state.id}": ${String(error)}`)
         }
         try {
-          appendTeamEvent(ctx, captain.session, 'agent-teams/team-created', {
+          appendAuditedTeamEvent(ctx, captain.session, 'agent-teams/team-created', {
             teamId: created.state.id,
             captainSessionId: captain.id,
             name: created.state.name,
             ...created.state.description !== undefined ? { description: created.state.description } : {},
             ...created.state.profile?.name === undefined ? {} : { profile: created.state.profile.name },
-          })
+          }, stateRoot, created.state.id)
           for (const member of created.state.members) {
-            appendTeamEvent(ctx, captain.session, 'agent-teams/member-added', {
+            appendAuditedTeamEvent(ctx, captain.session, 'agent-teams/member-added', {
               teamId: created.state.id,
               memberId: member.id,
               name: member.name,
               ...member.role === undefined ? {} : { role: member.role },
-            })
+            }, stateRoot, created.state.id)
           }
           for (const task of created.state.tasks) {
-            appendTeamEvent(ctx, captain.session, 'agent-teams/task-created', {
+            appendAuditedTeamEvent(ctx, captain.session, 'agent-teams/task-created', {
               teamId: created.state.id,
               taskId: task.id,
               subject: task.subject,
               dependencies: task.dependencies,
               ...task.assignee === undefined ? {} : { assignee: task.assignee },
-            })
+            }, stateRoot, created.state.id)
           }
         } catch (error: unknown) {
           ctx.logger.warn(`agent-teams: post-create events failed for "${created.state.id}": ${String(error)}`)
@@ -1083,12 +1083,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           }
           throw error
         }
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-added', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-added', {
           teamId: fresh.id,
           memberId: member.id,
           name: member.name,
           ...member.role !== undefined ? { role: member.role } : {},
-        })
+        }, stateRoot, fresh.id)
         return {
           member_name: member.name,
           member_id: member.id,
@@ -1144,10 +1144,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         member.status = 'removed'
         await writeTeam(stateRoot, fresh)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-removed', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/member-removed', {
           teamId: fresh.id,
           memberId: member.id,
-        })
+        }, stateRoot, fresh.id)
         return { member: { ...member }, requeued }
       })
       if (revoked.member.id !== '') {
@@ -1253,10 +1253,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           }
           fresh.halted = false
           fresh.haltedAt = undefined
-          appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-resumed', {
+          appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-resumed', {
             teamId: fresh.id,
             reason: args.resumeReason ?? '',
-          })
+          }, stateRoot, fresh.id)
         }
         const dependencies = args.dependencies ?? []
         for (const dependency of dependencies) {
@@ -1299,7 +1299,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         fresh.taskSeq += 1
         fresh.tasks.push(task)
         await writeTeam(stateRoot, fresh)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/task-created', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/task-created', {
           teamId: fresh.id,
           taskId: task.id,
           subject: task.subject,
@@ -1307,7 +1307,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...task.assignee !== undefined ? { assignee: task.assignee } : {},
           ...task.kind === undefined ? {} : { kind: task.kind },
           ...task.round === undefined ? {} : { round: task.round },
-        })
+        }, stateRoot, fresh.id)
         return {
           task_id: task.id,
           subject: task.subject,
@@ -1414,13 +1414,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           task.updatedAt = Date.now()
         }
         await writeTeam(stateRoot, fresh)
-        appendTeamEvent(ctx, captain.session, 'agent-teams/task-updated', {
+        appendAuditedTeamEvent(ctx, captain.session, 'agent-teams/task-updated', {
           teamId: fresh.id,
           taskId: task.id,
           status: task.status,
           assignee: task.assignee,
           ...args.reason === undefined ? {} : { output: `Reassigned: ${args.reason}` },
-        })
+        }, stateRoot, fresh.id)
       })
       if (quiescenceError !== undefined) throw quiescenceError
       if (target !== CAPTAIN_KEY) await scheduler.kickMember(workspace, team.id, target, captain)
@@ -1517,12 +1517,12 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         }
         const attemptId = beginTaskAttempt(task, assignee)
         await writeTeam(stateRoot, fresh)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
           teamId: fresh.id,
           taskId: task.id,
           status: task.status,
           assignee: task.assignee,
-        })
+        }, stateRoot, fresh.id)
         return {
           task_id: task.id,
           status: task.status,
@@ -1693,7 +1693,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ))
         }
         await writeTeam(stateRoot, fresh)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
           teamId: fresh.id,
           taskId: task.id,
           status: task.status,
@@ -1701,9 +1701,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...task.output !== undefined ? { output: task.output } : {},
           ...task.verdict === undefined ? {} : { verdict: task.verdict },
           ...task.round === undefined ? {} : { round: task.round },
-        })
+        }, stateRoot, fresh.id)
         for (const created of followUp?.created ?? []) {
-          appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-created', {
+          appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-created', {
             teamId: fresh.id,
             taskId: created.id,
             subject: created.subject,
@@ -1711,7 +1711,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             ...created.assignee === undefined ? {} : { assignee: created.assignee },
             ...created.kind === undefined ? {} : { kind: created.kind },
             ...created.round === undefined ? {} : { round: created.round },
-          })
+          }, stateRoot, fresh.id)
         }
         return {
           task_id: task.id,
@@ -1767,14 +1767,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (to === CAPTAIN_KEY) {
           const message = { ...createMessage(from, CAPTAIN_KEY, args.content), deliveryClaimedAt: Date.now() }
           await appendMailbox(stateRoot, fresh.id, CAPTAIN_KEY, message)
-          appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
+          appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
             teamId: fresh.id,
             messageId: message.id,
             from,
             to: CAPTAIN_KEY,
             content: args.content,
             ts: message.ts,
-          })
+          }, stateRoot, fresh.id)
           return { kind: 'captain' as const, fresh, identity, message, from }
         }
         if (fresh.halted === true) {
@@ -1783,14 +1783,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         const recipient = requireMember(fresh, to)
         const message = { ...createMessage(from, recipient.name, args.content), deliveryClaimedAt: Date.now() }
         await appendMailbox(stateRoot, fresh.id, recipient.name, message)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/message-sent', {
           teamId: fresh.id,
           messageId: message.id,
           from,
           to: recipient.name,
           content: args.content,
           ts: message.ts,
-        })
+        }, stateRoot, fresh.id)
         return { kind: 'member' as const, fresh, identity, message, from, recipient }
       })
 
@@ -2011,10 +2011,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           fresh.halted = false
           fresh.haltedAt = undefined
           await writeTeam(stateRoot, fresh)
-          appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-resumed', {
+          appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-resumed', {
             teamId: fresh.id,
             reason: args.reason,
-          })
+          }, stateRoot, fresh.id)
         }
         return {
           status: resumed.status,
@@ -2078,9 +2078,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       }
       await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
-        appendTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-deleted', {
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-deleted', {
           teamId: fresh.id,
-        })
+        }, stateRoot, fresh.id)
         // Archive, not delete: tasks (with their dependency graph) and the
         // mailboxes stay on disk for later review and dependency rebuilds.
         await archiveTeamDir(stateRoot, fresh.id)

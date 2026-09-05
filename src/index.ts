@@ -40,11 +40,7 @@ import { formatProfilesForPrompt, type TeamProfileConfig } from './profiles.ts'
 import { qualityPlanningPrompt } from './quality-gates.ts'
 
 import { authenticatedWebRoutes, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
-
-/** Web-server service key candidates, newest first. */
-const WEB_SERVER_KEYS = ['webServer', 'httpServer'] as const
-/** Workspace registry service key candidates, newest first. */
-const WORKSPACE_KEYS = ['workspaceRegistry', 'workspace'] as const
+import { checkCompatibility, detectDshCapabilities, resolveWebServerKey, resolveWorkspaceKey } from './host/capabilities.ts'
 
 export const name = 'agent-teams'
 export const inject = ['tools', 'llm', 'subagents', 'systemPrompt', 'agents']
@@ -78,6 +74,12 @@ export interface Config {
    * Disable to keep the natural-language trigger as the only entry point.
    */
   slashCommand?: boolean
+  /**
+   * Refuse activation when the probed host family is outside the supported
+   * set (default `false`: report and continue). Use for mission-critical
+   * profiles where a half-broken team run is worse than a loud failure.
+   */
+  compatibilityStrict?: boolean
 }
 
 // `z.object()` has an implicit `{}` default in Schemastery.  Fallback routes
@@ -128,6 +130,7 @@ export const Config: z<Config> = z.object({
   maxMembers: z.natural().min(1).default(8),
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
+  compatibilityStrict: z.boolean(),
 })
 
 /** The model-facing usage policy: when and how to drive AgentTeams. */
@@ -164,6 +167,27 @@ export function apply(ctx: Context, config: Config): void {
   // concurrent activation — so capability validation happens at the first
   // member spawn (`spawnMember`), the earliest point the provider list is
   // settled, rather than here.
+
+  // Probe host capabilities once per activation and surface the compatibility
+  // posture instead of silently failing later. Informational by default; an
+  // explicit `compatibilityStrict: true` profile turns a non-supported family
+  // into an activation refusal (the loud failure is cheaper than a half-broken
+  // team run).
+  const capabilities = detectDshCapabilities(ctx)
+  const compatibility = checkCompatibility(capabilities)
+  if (!compatibility.ok) {
+    const message = [
+      `agent-teams: host family "${compatibility.family}" is outside the supported set [${compatibility.required.join(', ')}].`,
+      `detected${compatibility.detected === undefined ? '' : ` host ${compatibility.detected}`}; pin the matching plugin release instead of following @latest.`,
+    ].join(' ')
+    if (config.compatibilityStrict === true) {
+      throw new Error(message)
+    }
+    ctx.logger.warn(message)
+  }
+  for (const note of compatibility.notes) {
+    ctx.logger.info(`agent-teams: ${note}`)
+  }
 
   const toolNames = [
     'agent_teams_create',
@@ -215,8 +239,10 @@ export function apply(ctx: Context, config: Config): void {
   let webRegistered = false
   const registerWebSurface = (): void => {
     if (webRegistered) return
-    const rawWebServer = (ctx.get(WEB_SERVER_KEYS[0]) ?? ctx.get(WEB_SERVER_KEYS[1])) as WebRouteHost | undefined
-    const workspaceRegistry = (ctx.get(WORKSPACE_KEYS[0]) ?? ctx.get(WORKSPACE_KEYS[1])) as WorkspaceRegistry | undefined
+    const webServerKey = resolveWebServerKey(ctx)
+    const workspaceKey = resolveWorkspaceKey(ctx)
+    const rawWebServer = webServerKey === undefined ? undefined : ctx.get(webServerKey) as WebRouteHost | undefined
+    const workspaceRegistry = workspaceKey === undefined ? undefined : ctx.get(workspaceKey) as WorkspaceRegistry | undefined
     if (rawWebServer === undefined || workspaceRegistry === undefined) return
     const webServer = authenticatedWebRoutes(rawWebServer, () => ctx.get('connection') as BrowserRequestGate | undefined)
     webRegistered = true
@@ -505,8 +531,8 @@ export function apply(ctx: Context, config: Config): void {
 
   registerWebSurface()
   ctx.on('internal/service', (name) => {
-    if (WEB_SERVER_KEYS.includes(name as (typeof WEB_SERVER_KEYS)[number])
-      || WORKSPACE_KEYS.includes(name as (typeof WORKSPACE_KEYS)[number])) {
+    if (name === 'webServer' || name === 'httpServer'
+      || name === 'workspaceRegistry' || name === 'workspace') {
       registerWebSurface()
     }
   })
