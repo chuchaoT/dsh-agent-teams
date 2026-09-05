@@ -96,7 +96,6 @@ steps. The `src/host/` facade is the migration boundary.
   future work.
 
 ## SOP stage barriers and run manifest
-
 - Profile template tasks may carry a `stage` label. `applyStageBarriers`
   (profiles.ts) adds barrier edges at expansion: tasks within one stage stay
   parallel; each later stage's tasks depend on all tasks of the previous
@@ -107,6 +106,27 @@ steps. The `src/host/` facade is the migration boundary.
   directory before the archive move: goal, roster, per-task lifetime facts
   (attempts, verdict, stage, artifact ids, evidence counts), telemetry totals,
   memory/audit counts — the replay/review contract for the archived bundle.
+- `src/replay.ts` verifies an archived bundle (`verifyArchivedRun`): manifest
+  schema, team id match, every referenced artifact on disk, readable logs.
+  Old pre-hardening bundles degrade to informational notes, not failures.
+
+## Enterprise items — applicability assessment
+
+Items from the original plan that depend on capabilities outside this plugin:
+
+- **SQLite/WAL state backend**: evaluated and deliberately not done — the
+  single-writer assumption is documented, revision CAS plus file locks cover
+  the actual cross-process races, and telemetry/audit/memory are already
+  append-only. The remaining win (indexed queries) does not justify a native
+  driver dependency for this plugin's scale.
+- **True OTel exporter**: optional external adapter; the plugin's own
+  telemetry model (src/telemetry.ts) already carries the spans' fields
+  (run/task/attempt, duration, cost, verdict) — exporting is a deployment
+  concern (env-based OTLP endpoint), not a plugin boundary.
+- **Enterprise RBAC/ABAC, dual approval, attestations**: belong to the host
+  control plane and external PKI/identity — out of scope for a workspace
+  plugin. The capability matrix (policy as code) is the plugin-side
+  contribution; user/team roles and signed provenance are host-side.
 
 ## Known boundaries
 
