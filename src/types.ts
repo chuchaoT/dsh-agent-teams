@@ -167,6 +167,8 @@ export interface TeamTask {
   approvalReason?: string
   /** When the human approved (denial is recorded via the audit log). */
   approvedAt?: number
+  /** SOP stage label (declarative multi-stage workflow). */
+  stage?: string
   reviewedTaskId?: string
   reviewedAttempt?: number
   /** Repair source: the implementation / previous successful artifact. */

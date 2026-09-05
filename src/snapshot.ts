@@ -61,6 +61,7 @@ export interface TeamActivityTask {
   readonly requiresApproval?: boolean
   readonly approvalStatus?: 'awaiting' | 'approved' | 'rejected'
   readonly approvalReason?: string
+  readonly stage?: string
 }
 
 /** One captain-inbox preview row. */
@@ -210,6 +211,7 @@ export async function assembleTeamSnapshot(
       ...task.requiresApproval === undefined ? {} : { requiresApproval: task.requiresApproval },
       ...task.approvalStatus === undefined ? {} : { approvalStatus: task.approvalStatus },
       ...task.approvalReason === undefined ? {} : { approvalReason: task.approvalReason },
+      ...task.stage === undefined ? {} : { stage: task.stage },
     })),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),

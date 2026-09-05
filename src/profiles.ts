@@ -47,6 +47,13 @@ export interface TeamProfileTaskConfig {
   description?: string
   assignee?: string
   dependencies?: string[]
+  /**
+   * SOP stage label. Tasks sharing a stage may run in parallel; the next
+   * stage's tasks are automatically gated behind the previous stage's tasks
+   * (barrier edges added at expansion time), so a profile can encode a
+   * declarative multi-stage SOP while keeping intra-stage parallelism.
+   */
+  stage?: string
 }
 
 /** One named team-profile template from plugin config. */
@@ -85,6 +92,7 @@ export interface NormalizedProfileTask {
   assignee?: string
   dependencies: string[]
   sourceIndex: number
+  stage?: string
 }
 
 /** A fully validated, topologically ordered team profile. */
@@ -571,6 +579,40 @@ function resolveTaskAssignee(
   const fuzzy = memberByKey.get(sanitizeKey(trimmed))
   if (fuzzy !== undefined) return fuzzy.name
   throw new Error(`profile task "${taskId}" assignee "${trimmed}" is not a profile member`)
+}
+
+/**
+ * Add SOP stage barrier edges to a profile task list.
+ *
+ * Tasks sharing a stage may run in parallel; a later stage's tasks depend on
+ * every task of the immediately previous stage (barrier). Stage-less tasks
+ * are never gated by this function, and explicit `dependencies` are
+ * preserved (deduplicated against barrier edges). Returns a new array when
+ * any edge was added, otherwise the input unchanged.
+ */
+export function applyStageBarriers(tasks: readonly TeamProfileTaskConfig[]): readonly TeamProfileTaskConfig[] {
+  const stageOrder: string[] = []
+  const perStage = new Map<string, TeamProfileTaskConfig[]>()
+  for (const task of tasks) {
+    const stageName = task.stage?.trim() ?? ''
+    if (stageName === '') continue
+    if (!stageOrder.includes(stageName)) stageOrder.push(stageName)
+    const bucket = perStage.get(stageName)
+    if (bucket === undefined) perStage.set(stageName, [task])
+    else bucket.push(task)
+  }
+  if (stageOrder.length < 2) return tasks
+  return tasks.map((task) => {
+    const stageName = task.stage?.trim() ?? ''
+    if (stageName === '') return task
+    const index = stageOrder.indexOf(stageName)
+    if (index <= 0) return task
+    const previous = perStage.get(stageOrder[index - 1]!) ?? []
+    const barrier = previous.map((item) => item.id)
+    const existing = task.dependencies ?? []
+    const merged = [...existing, ...barrier].filter((id, position, array) => array.indexOf(id) === position)
+    return { ...task, dependencies: merged }
+  })
 }
 
 function topoSortTasks(tasks: NormalizedProfileTask[], profileName: string): NormalizedProfileTask[] {

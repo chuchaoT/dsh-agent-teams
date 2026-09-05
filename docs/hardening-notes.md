@@ -82,7 +82,6 @@ async `agentLoop.create()`, session lock, session v2) and the migration
 steps. The `src/host/` facade is the migration boundary.
 
 ## Policy as code (layer 1): capability matrix
-
 - `src/policy.ts` maps member roles to coarse capability classes
   (read/write/execute/network/secrets). Defaults: `reviewer`/`verifier`
   read + execute (no writes, no network); `researcher` read + network
@@ -95,6 +94,19 @@ steps. The `src/host/` facade is the migration boundary.
   `capabilityMatrix` in the plugin config (per-role overrides).
 - Layer 2 (filesystem path scoping / host write interception) remains
   future work.
+
+## SOP stage barriers and run manifest
+
+- Profile template tasks may carry a `stage` label. `applyStageBarriers`
+  (profiles.ts) adds barrier edges at expansion: tasks within one stage stay
+  parallel; each later stage's tasks depend on all tasks of the previous
+  stage. Stage-less tasks are never gated; explicit dependencies merge
+  (deduplicated).
+- `TeamTask.stage` is durable and visible in status/panel snapshots.
+- On archive (agent_teams_delete) a `manifest.json` is written into the team
+  directory before the archive move: goal, roster, per-task lifetime facts
+  (attempts, verdict, stage, artifact ids, evidence counts), telemetry totals,
+  memory/audit counts — the replay/review contract for the archived bundle.
 
 ## Known boundaries
 

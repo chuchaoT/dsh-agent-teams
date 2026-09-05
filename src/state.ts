@@ -1048,6 +1048,7 @@ export function isTeamTask(value: unknown): value is TeamTask {
       || value['approvalStatus'] === 'rejected')
     && (value['approvalReason'] === undefined || isOptionalString(value['approvalReason']))
     && (value['approvedAt'] === undefined || isFiniteNumber(value['approvedAt']))
+    && isOptionalString(value['stage'])
     && (value['evidence'] === undefined || Array.isArray(value['evidence']))
     && (value['artifacts'] === undefined || Array.isArray(value['artifacts']))
     && isFiniteNumber(value['createdAt'])

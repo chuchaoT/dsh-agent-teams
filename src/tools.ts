@@ -55,6 +55,10 @@ import {
   taskKindOf,
 } from './state.ts'
 import type { AcceptanceResult, CommandResult, ReviewFinding, ReviewVerdict, TaskKind } from './types.ts'
+import { writeFile } from 'node:fs/promises'
+import { buildTeamManifest } from './manifest.ts'
+import { readMemoryEntries } from './team-memory.ts'
+import { readTeamEventLog } from './state.ts'
 import {
   deliverToMember,
   installRetiredMemberGuard,
@@ -87,9 +91,10 @@ import {
   writeArtifactFile,
   type ArtifactKind,
 } from './artifacts.ts'
-import { createTelemetryRecord, summarizeTelemetry, type RunTelemetryRecord } from './telemetry.ts'
+import { createTelemetryRecord, summarizeTelemetry, totalsOf, type RunTelemetryRecord } from './telemetry.ts'
 import { installTeamScheduler } from './scheduler.ts'
 import { resolveTeamProfile } from './profiles.ts'
+import { applyStageBarriers } from './profiles.ts'
 
 export { steerCaptainReport } from './members.ts'
 
@@ -2067,6 +2072,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         ...task.requiresApproval === undefined ? {} : { requires_approval: task.requiresApproval },
         ...task.approvalStatus === undefined ? {} : { approval_status: task.approvalStatus },
         ...task.approvalReason === undefined ? {} : { approval_reason: task.approvalReason },
+        ...task.stage === undefined ? {} : { stage: task.stage },
       }))
       const mailboxWarnings: string[] = []
       let mailboxWarningCount = 0
@@ -2263,6 +2269,21 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/team-deleted', {
           teamId: fresh.id,
         }, stateRoot, fresh.id)
+        // Replay contract: a self-describing manifest lands inside the team
+        // directory before the archive move, so the archived bundle can be
+        // reviewed (and replayed) without re-deriving the story from logs.
+        const telemetryRecords = await readTeamTelemetry(stateRoot, fresh.id).catch(() => [])
+        const telemetryTotals = totalsOf(telemetryRecords as RunTelemetryRecord[])
+        const memoryRecords = await readMemoryEntries(stateRoot, fresh.id).catch(() => [])
+        const auditRecords = await readTeamEventLog(stateRoot, fresh.id).catch(() => [])
+        const manifest = buildTeamManifest(fresh, {
+          archivedAt: Date.now(),
+          telemetryAttempts: telemetryTotals.attempts,
+          telemetryCostUsd: telemetryTotals.totalCostUsd,
+          memoryEntries: memoryRecords.length,
+          auditEvents: auditRecords.length,
+        })
+        await writeFile(join(stateRoot, fresh.id, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
         // Archive, not delete: tasks (with their dependency graph) and the
         // mailboxes stay on disk for later review and dependency rebuilds.
         await archiveTeamDir(stateRoot, fresh.id)
@@ -2299,7 +2320,8 @@ async function initializeProfileTeam(input: {
   }
   await validateMemberLlmSelections(input.ctx, selections, input.exec.signal)
   const now = Date.now()
-  const seedToActual = new Map(profile.tasks.map((template, index) => [template.id, `t${index + 1}`] as const))
+  const stagedTasks = applyStageBarriers(profile.tasks ?? [])
+  const seedToActual = new Map(stagedTasks.map((template, index) => [template.id, `t${index + 1}`] as const))
   const draft: TeamState = {
     name: input.teamName,
     id: input.teamId,
@@ -2332,17 +2354,18 @@ async function initializeProfileTeam(input: {
         status: 'idle' as const,
       }
     }),
-    tasks: profile.tasks.map((template, index) => ({
+    tasks: stagedTasks.map((template, index) => ({
       id: `t${index + 1}`,
       profileSeedId: template.id,
       subject: template.subject,
       description: template.description,
       status: 'pending' as const,
       assignee: template.assignee,
-      dependencies: template.dependencies.map((dependency) => seedToActual.get(dependency) ?? dependency),
+      dependencies: (template.dependencies ?? []).map((dependency) => seedToActual.get(dependency) ?? dependency),
       attempt: 0,
       createdAt: now,
       updatedAt: now,
+      ...template.stage === undefined ? {} : { stage: template.stage },
     })),
     taskSeq: profile.tasks.length,
   }
