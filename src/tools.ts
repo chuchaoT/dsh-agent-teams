@@ -195,13 +195,58 @@ async function requireCaptainTeam(workspace: string, config: ToolsConfig, captai
   return team
 }
 
-/** The team this captain or active member currently participates in. */
-async function requireParticipantTeam(workspace: string, config: ToolsConfig, caller: Agent): Promise<TeamState> {
-  const team = await findTeamByParticipant(stateRootOf(workspace, config), caller.id)
-  if (team === undefined) {
-    throw new Error('you do not lead or belong to any active team yet')
+/** The captain's workspace, resolved from the caller's durable parent session. */
+function captainWorkspaceOf(ctx: Context, caller: Agent): string | undefined {
+  const parentSession = caller.session.header.parentSession
+  if (parentSession === undefined) return undefined
+  const captain = ctx.agents.get(parentSession as SessionId)
+  return captain?.session.header.cwd ?? undefined
+}
+
+/**
+ * The team the caller participates in, with the exact state root that holds
+ * it. A member's own session cwd can differ from the captain's workspace on
+ * some hosts (headless continuable children can inherit different cwds), so
+ * the lookup scans every plausible workspace root — the caller's, the
+ * captain's, each live agent's, and the process cwd — before failing. All
+ * downstream mutations must use the returned stateRoot, not the caller's, or
+ * durable files split across workspaces.
+ */
+async function requireParticipantTeamWithRoot(
+  workspace: string,
+  config: ToolsConfig,
+  caller: Agent,
+  ctx: Context,
+): Promise<{ team: TeamState; stateRoot: string }> {
+  const roots = new Set<string>([workspace])
+  const captainWorkspace = captainWorkspaceOf(ctx, caller)
+  if (captainWorkspace !== undefined) roots.add(captainWorkspace)
+  // Some hosts/mocks expose only get(); list() is optional for the scan.
+  const listAgents = (ctx.agents as unknown as { list?: () => Agent[] }).list
+  if (typeof listAgents === 'function') {
+    for (const agent of listAgents()) {
+      const cwd = agent.session.header.cwd
+      if (cwd !== undefined) roots.add(cwd)
+    }
   }
-  return team
+  roots.add(process.cwd())
+  for (const root of roots) {
+    const candidateRoot = stateRootOf(root, config)
+    const team = await findTeamByParticipant(candidateRoot, caller.id)
+    if (team !== undefined) return { team, stateRoot: candidateRoot }
+  }
+  throw new Error('you do not lead or belong to any active team yet')
+}
+
+/** The team this captain or active member currently participates in. */
+async function requireParticipantTeam(
+  workspace: string,
+  config: ToolsConfig,
+  caller: Agent,
+  ctx: Context,
+): Promise<TeamState> {
+  const located = await requireParticipantTeamWithRoot(workspace, config, caller, ctx)
+  return located.team
 }
 
 type ParticipantIdentity =
@@ -1568,8 +1613,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(args, exec) {
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
-      const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const located = await requireParticipantTeamWithRoot(workspace, config, caller, ctx)
+      const stateRoot = located.stateRoot
+      const team = located.team
       return withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
         const task = requireTask(fresh, args.task_id)
@@ -1726,8 +1772,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(args, exec) {
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
-      const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const located = await requireParticipantTeamWithRoot(workspace, config, caller, ctx)
+      const stateRoot = located.stateRoot
+      const team = located.team
       const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
         const task = requireTask(fresh, args.task_id)
@@ -1930,8 +1977,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(args, exec) {
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
-      const stateRoot = stateRootOf(workspace, config)
-      const team = await requireParticipantTeam(workspace, config, caller)
+      const located = await requireParticipantTeamWithRoot(workspace, config, caller, ctx)
+      const stateRoot = located.stateRoot
+      const team = located.team
       const to = args.to.trim()
       const prepared = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
         const { team: fresh, identity } = await requireFreshParticipant(stateRoot, team.id, caller.id)
@@ -2029,14 +2077,14 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
     async execute(_args, exec) {
       const caller = requireCaptain(exec)
       const workspace = workspaceOf(caller)
-      const stateRoot = stateRootOf(workspace, config)
-      const located = await requireParticipantTeam(workspace, config, caller)
-      if (located.captainSessionId === caller.id) {
-        await scheduler.kickTeam(workspace, located.id, caller)
+      const located = await requireParticipantTeamWithRoot(workspace, config, caller, ctx)
+      const stateRoot = located.stateRoot
+      if (located.team.captainSessionId === caller.id) {
+        await scheduler.kickTeam(workspace, located.team.id, caller)
       }
       const { team, identity } = await withTeamLock(
-        teamLockKey(stateRoot, located.id),
-        () => requireFreshParticipant(stateRoot, located.id, caller.id),
+        teamLockKey(stateRoot, located.team.id),
+        () => requireFreshParticipant(stateRoot, located.team.id, caller.id),
       )
       const activity = memberActivity(ctx, team.members.map((member) => member.id))
       const members = team.members

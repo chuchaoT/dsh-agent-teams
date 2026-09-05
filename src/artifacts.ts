@@ -165,9 +165,12 @@ export function artifactFileBlueprint(
   }
 }
 
-/** 任一 artifact 文件在 stateRoot 下的目标路径。 */
+/** 任一 artifact 文件在 team 状态目录下的目标路径。
+ * `stateRoot` 是 `<workspace>/<stateDir>` 的解析根（已含状态目录名），
+ * 因此这里只接 teamId/artifacts 段；uri 里的 `.agent-teams/` 是相对
+ * workspace 的展示路径，绝不能再拼进 stateRoot（曾造成双重目录）。 */
 function artifactPath(stateRoot: string, teamId: string, artifactId: string): string {
-  return join(stateRoot, '.agent-teams', teamId, 'artifacts', `${artifactId}.json`)
+  return join(stateRoot, teamId, 'artifacts', `${artifactId}.json`)
 }
 
 /** rename 的 Windows 重试封装：EPERM（目标被临时占用）最多重试两次。 */
@@ -258,7 +261,7 @@ export async function deleteArtifactFile(
  * 目录不存在返回 []; 忽略以 `.` 开头的文件（隐藏文件、临时文件）与非 `.json` 文件。
  */
 export async function listArtifactIds(stateRoot: string, teamId: string): Promise<string[]> {
-  const dir = join(stateRoot, '.agent-teams', teamId, 'artifacts')
+  const dir = join(stateRoot, teamId, 'artifacts')
   let entries: Dirent[]
   try {
     entries = await readdir(dir, { withFileTypes: true })

@@ -144,7 +144,9 @@ test('writeArtifactFile → readArtifactFile round-trips record and content', as
   const record = computeArtifactRecord(input)
   const absolute = await writeArtifactFile(root, record, input.content)
   assert.ok(isAbsolute(absolute), 'writeArtifactFile must return an absolute path')
-  assert.ok(absolute.replace(/\\/g, '/').endsWith(`.agent-teams/${record.teamId}/artifacts/${record.id}.json`))
+  // stateRoot is the resolved <workspace>/<stateDir> root, so the artifact
+  // lands directly under <stateRoot>/<teamId>/artifacts/ (no stateDir prefix).
+  assert.ok(absolute.replace(/\\/g, '/').endsWith(`${record.teamId}/artifacts/${record.id}.json`))
 
   const got = await readArtifactFile(root, record.teamId, record.id)
   assert.ok(got, 'readArtifactFile must return the written artifact')
@@ -176,7 +178,7 @@ test('listArtifactIds: missing dir is [], dotfiles are ignored, ids are stripped
   const root = await makeTempStateRoot(t)
   assert.deepEqual(await listArtifactIds(root, 'team-alpha'), [])
 
-  const dir = join(root, '.agent-teams', 'team-alpha', 'artifacts')
+  const dir = join(root, 'team-alpha', 'artifacts')
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, '.keep'), 'hidden marker')
   await writeFile(join(dir, '.art-0.tmp'), 'partial write')
@@ -188,7 +190,7 @@ test('listArtifactIds: missing dir is [], dotfiles are ignored, ids are stripped
 
 test('readArtifactFile throws for corrupt files (missing fields or invalid JSON)', async (t) => {
   const root = await makeTempStateRoot(t)
-  const dir = join(root, '.agent-teams', 'team-alpha', 'artifacts')
+  const dir = join(root, 'team-alpha', 'artifacts')
   await mkdir(dir, { recursive: true })
 
   const missingRecord = join(dir, 'art-broken-record.json')
