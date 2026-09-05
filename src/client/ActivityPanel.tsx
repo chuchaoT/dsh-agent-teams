@@ -164,6 +164,9 @@ function taskTitle(task: ActivityTask, model: string): string {
     task.kind,
     task.round === undefined ? undefined : `r${task.round}`,
     task.verdict,
+    task.priority === undefined || task.priority === 'normal' ? undefined : task.priority,
+    task.evidenceCount === undefined || task.evidenceCount === 0 ? undefined : `ev${task.evidenceCount}`,
+    task.artifactIds === undefined || task.artifactIds.length === 0 ? undefined : `art${task.artifactIds.length}`,
     model === '' ? undefined : model,
   ].filter((item): item is string => item !== undefined)
   return extras.length === 0 ? `${task.id} · ${task.subject}` : `${task.id} · ${task.subject} · ${extras.join(' · ')}`
@@ -539,6 +542,11 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
             <span data-stat="members">{t('team.stats.members', { count: team.members.length })}</span>
             <span data-stat="tasks">{t('team.stats.completed', { completed: completedCount, total: team.tasks.length })}</span>
             <span data-stat="messages">{t('team.stats.messages', { count: team.messageCount })}</span>
+            {team.telemetrySummary !== undefined && team.telemetrySummary !== '' && (
+              <span data-stat="telemetry" className={css.telemetryStat} title={team.telemetrySummary}>
+                {t('team.stats.telemetry')}
+              </span>
+            )}
           </span>
           {canStop && (
             <button

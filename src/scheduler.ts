@@ -41,6 +41,11 @@ import {
   type AttemptDisposition,
 } from './attempts.ts'
 import { createTelemetryRecord } from './telemetry.ts'
+import {
+  pruneMemory,
+  readMemoryEntries,
+  searchMemory,
+} from './team-memory.ts'
 import type { TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
@@ -66,6 +71,8 @@ export interface DependencyOutput {
   readonly subject: string
   readonly profileSeedId?: string
   readonly output?: string
+  /** Typed artifact ids produced by the dependency task (long text stays on disk). */
+  readonly artifactRefs?: readonly string[]
 }
 
 export interface DispatchTicket {
@@ -93,6 +100,8 @@ export interface DispatchTicket {
   /** Resolved route captured at dispatch (for telemetry attribution). */
   readonly provider?: string
   readonly model?: string
+  /** Relevant project/team/decision memory lines injected into the assignment. */
+  readonly relevantMemory?: readonly string[]
 }
 
 function taskProfileSeedId(task: TeamTask): string | undefined {
@@ -144,6 +153,9 @@ export function collectCompletedDependencyOutputs(
         subject: task.subject,
         ...profileSeedId === undefined ? {} : { profileSeedId },
         ...task.output === undefined ? {} : { output: task.output },
+        ...task.artifacts === undefined || task.artifacts.length === 0
+          ? {}
+          : { artifactRefs: task.artifacts.map((artifact) => artifact.artifactId) },
       }
     })
 }
@@ -158,7 +170,10 @@ export function formatDependencyOutputs(items: readonly DependencyOutput[]): str
       : item.output
     const truncated = raw.length > DEPENDENCY_OUTPUT_MAX_CHARS
     const body = truncated ? `${raw.slice(0, DEPENDENCY_OUTPUT_MAX_CHARS)} [truncated]` : raw
-    return `- ${item.id}${seed} ${item.subject}:\n  ${body}`
+    const artifacts = item.artifactRefs === undefined || item.artifactRefs.length === 0
+      ? ''
+      : `\n  Artifacts: ${item.artifactRefs.join(', ')} (read via the artifact store when needed)`
+    return `- ${item.id}${seed} ${item.subject}:\n  ${body}${artifacts}`
   })
   let selected = formatted
   while (selected.length > 1 && selected.join('\n').length > DEPENDENCY_OUTPUTS_TOTAL_MAX_CHARS) {
@@ -250,6 +265,11 @@ acceptanceResults: ${JSON.stringify((ticket.acceptance ?? []).map((criterion) =>
 commandsRun: ${JSON.stringify((ticket.verify ?? []).map((command) => ({ command, status: 'passed', exitCode: 0, evidence: '<observed result>' })))}
 ${kind === 'implementation' || kind === 'repair' ? 'changedPaths: list the actual workspace-relative POSIX paths you changed.\n' : ''}`
     : ''
+  const memorySection = ticket.relevantMemory === undefined || ticket.relevantMemory.length === 0
+    ? ''
+    : `
+Relevant team memory (context from previous runs; verification supersedes these):
+${ticket.relevantMemory.map((line) => `- ${line}`).join('\n')}`
   return `AgentTeams automatic task assignment from the shared task list.
 
 You are executing as configured member "${ticket.memberName}".
@@ -266,7 +286,7 @@ ${executionPrompt}
 `}
 Completed dependency results:
 ${formatDependencyOutputs(ticket.dependencyOutputs)}
-
+${memorySection}
 Task: ${ticket.taskId}${seed} — ${ticket.subject}${description}
 ${contract === '' ? '' : `\nContract:\n${contract}\n`}
 ${structuredCompletion}
@@ -285,6 +305,39 @@ function fallbackMailboxPrompt(messages: Awaited<ReturnType<typeof readUnreadMai
     ...messages.map(message => `\nFrom ${message.from}:\n${message.content}`),
     '\nHandle these messages in this turn. Task assignments still require agent_teams_claim_task and the current attempt_id.',
   ].join('\n')
+}
+
+/**
+ * Load relevant project/team/decision memory lines for a dispatch, with a
+ * recent-fallback when keyword search hits nothing. Memory is advisory: any
+ * read/prune failure degrades to an empty context rather than a failed
+ * dispatch.
+ */
+async function loadRelevantMemory(
+  ctx: Context,
+  stateRoot: string,
+  teamId: string,
+  subject: string,
+  description: string | undefined,
+): Promise<string[]> {
+  try {
+    const entries = await readMemoryEntries(stateRoot, teamId)
+    const pruned = pruneMemory(entries, Date.now())
+    const scopes = ['project', 'team', 'decision'] as const
+    const queryText = `${subject} ${description ?? ''}`.trim().slice(0, 64)
+    const keywordHits = queryText === ''
+      ? []
+      : searchMemory(pruned, { scopes, text: queryText, limit: 3 })
+    const recent = searchMemory(pruned, { scopes, limit: 10 })
+    const selected = [
+      ...keywordHits,
+      ...recent.filter((candidate) => !keywordHits.some((hit) => hit.id === candidate.id)),
+    ].slice(0, 5)
+    return selected.map((entry) => `[${entry.scope}] ${entry.content.slice(0, 300)}`)
+  } catch (error: unknown) {
+    ctx.logger.warn(`agent-teams: memory load failed for team ${teamId}: ${String(error)}`)
+    return []
+  }
 }
 
 /** Install one scheduler and its member activity observer. */
@@ -457,11 +510,23 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
         })
         if (ticket === undefined) return
 
+        const relevantMemory = await loadRelevantMemory(
+          ctx,
+          stateRoot,
+          team.id,
+          ticket.subject,
+          ticket.description,
+        )
+        const prompt = assignmentPrompt(
+          { ...ticket, ...relevantMemory.length === 0 ? {} : { relevantMemory } },
+          config.stateDir,
+          team.id,
+        )
         const accepted = await deliverToMember(
           ctx,
           captain,
           ticket.memberId,
-          assignmentPrompt(ticket, config.stateDir, team.id),
+          prompt,
           new AbortController().signal,
         )
         if (accepted) {

@@ -32,6 +32,10 @@ export interface ActivityTask {
   readonly kind?: string
   readonly round?: number
   readonly verdict?: string
+  readonly evidenceCount?: number
+  readonly artifactIds?: readonly string[]
+  readonly priority?: 'low' | 'normal' | 'high'
+  readonly deadlineAt?: number
 }
 
 /** One captain-inbox preview row. */
@@ -54,6 +58,7 @@ export interface ActivityTeam {
   readonly tasks: readonly ActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly ActivityMessage[]
+  readonly telemetrySummary?: string
 }
 
 /** A successfully-created conversation card that currently needs updates. */

@@ -324,6 +324,16 @@
   white-space: nowrap;
 }
 
+.telemetryStat {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 5px;
+  padding: 0 6px;
+  background: var(--dsw-alias-fill-balance, transparent);
+  cursor: help;
+}
+
 .teamStopButton {
   display: grid;
   width: 26px;
