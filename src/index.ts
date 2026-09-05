@@ -83,6 +83,12 @@ export interface Config {
    * profiles where a half-broken team run is worse than a loud failure.
    */
   compatibilityStrict?: boolean
+  /**
+   * Role capability matrix (policy as code). Keys are member roles; a role
+   * without an entry keeps the built-in defaults (reviewer read-only,
+   * researcher no shells, implementer full).
+   */
+  capabilityMatrix?: Record<string, import('./policy.ts').MemberCapabilities>
 }
 
 // `z.object()` has an implicit `{}` default in Schemastery.  Fallback routes
@@ -134,6 +140,13 @@ export const Config: z<Config> = z.object({
   promptSectionOrder: z.natural().default(117),
   slashCommand: z.boolean().default(true),
   compatibilityStrict: z.boolean(),
+  capabilityMatrix: z.dict(z.object({
+    read: z.boolean(),
+    write: z.boolean(),
+    execute: z.boolean(),
+    network: z.boolean(),
+    secrets: z.boolean(),
+  })),
 })
 
 /** The model-facing usage policy: when and how to drive AgentTeams. */
@@ -164,6 +177,7 @@ export function apply(ctx: Context, config: Config): void {
     memberMaxDepth: config.memberMaxDepth ?? 1,
     maxMembers: config.maxMembers ?? 8,
     profiles: config.profiles ?? {},
+    capabilityMatrix: config.capabilityMatrix,
   }
 
   // Provider registration is a sibling plugin's effect (`subagent-spawn` /

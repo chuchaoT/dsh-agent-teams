@@ -81,6 +81,21 @@ See `docs/dsh-0.1.3-adapter.md` for the breaking-change map (SessionHandle,
 async `agentLoop.create()`, session lock, session v2) and the migration
 steps. The `src/host/` facade is the migration boundary.
 
+## Policy as code (layer 1): capability matrix
+
+- `src/policy.ts` maps member roles to coarse capability classes
+  (read/write/execute/network/secrets). Defaults: `reviewer`/`verifier`
+  read + execute (no writes, no network); `researcher` read + network
+  (no shells); `implementer`/`engineer` full (no secrets).
+- `resolveToolDenials` turns a capability set into concrete DSH tool
+  denials (exact names + prefix rules); unknown tools are never denied
+  (safe conservative default).
+- Wired into `spawnMember`'s `toolFilter.deny` (alongside the captain-only
+  tool list) at all three spawn paths; configurable via
+  `capabilityMatrix` in the plugin config (per-role overrides).
+- Layer 2 (filesystem path scoping / host write interception) remains
+  future work.
+
 ## Known boundaries
 
 - Team state remains file-backed; a *single* writer process is assumed.

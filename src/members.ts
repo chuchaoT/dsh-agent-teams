@@ -600,6 +600,7 @@ export async function spawnMember(
   member: TeamMember,
   stateDir: string,
   signal: AbortSignal,
+  toolDenials: readonly string[] = [],
 ): Promise<void> {
   // Fail loud at the first use: provider registration is a sibling plugin's
   // effect and may settle after this plugin mounts. Capability checks here
@@ -629,7 +630,9 @@ export async function spawnMember(
         prompt: [{ type: 'text', text: memberWelcome(team, member.name) }],
         parent: captain,
         persona: memberPersona(team, member, stateDir, config.executionPrompt),
-        toolFilter: { deny: [...MEMBER_DENIED_TOOLS] },
+        toolFilter: {
+          deny: [...MEMBER_DENIED_TOOLS, ...toolDenials.filter((tool) => !MEMBER_DENIED_TOOLS.includes(tool as typeof MEMBER_DENIED_TOOLS[number]))],
+        },
         agentOptions: {
           provider: llmSelection.provider,
           model: llmSelection.model,

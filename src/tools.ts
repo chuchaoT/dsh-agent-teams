@@ -69,6 +69,11 @@ import {
 } from './members.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 import { refreshAttemptHeartbeat } from './attempts.ts'
+import {
+  DEFAULT_CAPABILITY_MATRIX,
+  effectiveCapabilities,
+  resolveToolDenials,
+} from './policy.ts'
 import { summarizeEvidence } from './evidence.ts'
 import {
   buildCommandEvidence,
@@ -106,6 +111,8 @@ export interface ToolsConfig {
   maxMembers: number
   /** Named team profiles from the active DSH profile. */
   profiles: Record<string, import('./profiles.ts').TeamProfileConfig>
+  /** Role capability matrix (policy as code); falls back to the defaults. */
+  capabilityMatrix?: Record<string, import('./policy.ts').MemberCapabilities>
 }
 
 /** Browser/UI mutations allowed while a plan is waiting for approval. */
@@ -580,6 +587,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             member,
             config.stateDir,
             runSignal,
+            roleToolDenials(member.role, config.capabilityMatrix),
           )
           spawned.push(member)
         }
@@ -1089,6 +1097,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             member,
             config.stateDir,
             exec.signal,
+            roleToolDenials(member.role, config.capabilityMatrix),
           )
         }
         fresh.members.push(member)
@@ -2355,6 +2364,7 @@ async function initializeProfileTeam(input: {
         member,
         input.config.stateDir,
         input.exec.signal,
+        roleToolDenials(member.role, input.config.capabilityMatrix),
       )
       spawned.push(member)
     }
@@ -2467,6 +2477,14 @@ function memberRuntime(config: ToolsConfig): MemberRuntimeConfig {
     executionPrompt: config.executionPrompt,
     fallback: config.fallback,
   }
+}
+
+/** Role-based tool restrictions for one member (policy as code layer 1). */
+function roleToolDenials(
+  role: string | undefined,
+  matrix: Record<string, import('./policy.ts').MemberCapabilities> | undefined,
+): string[] {
+  return resolveToolDenials(effectiveCapabilities(role, matrix ?? DEFAULT_CAPABILITY_MATRIX))
 }
 
 /** Render the status snapshot as compact text for the model. */
