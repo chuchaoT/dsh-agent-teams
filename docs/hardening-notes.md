@@ -52,6 +52,17 @@ are limited to documented semantics.
 - The activity panel listens to the SSE trigger and refetches the durable
   state route immediately; the low-frequency probe remains the backstop.
 
+## Human approval gate
+
+- A task created with `requires_approval=true` (plus `approval_reason`) stays
+  `pending` and is never auto-dispatched until a human decision.
+- `isDispatchableTask` (scheduler) enforces the gate; `agent_teams_approve_task`
+  (captain tool) and the panel approval route
+  (`/plugins/dsh-agent-teams/approve`) record the same decision; the SSE bus
+  refreshes the panel after a decision.
+- Approval state: `awaiting` → `approved` (dispatchable) / `rejected`
+  (re-approved later possible). Terminal tasks reject approval comments.
+
 ## Known boundaries
 
 - Team state remains file-backed; a *single* writer process is assumed.

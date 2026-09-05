@@ -36,6 +36,9 @@ export interface ActivityTask {
   readonly artifactIds?: readonly string[]
   readonly priority?: 'low' | 'normal' | 'high'
   readonly deadlineAt?: number
+  readonly requiresApproval?: boolean
+  readonly approvalStatus?: 'awaiting' | 'approved' | 'rejected'
+  readonly approvalReason?: string
 }
 
 /** One captain-inbox preview row. */
@@ -191,6 +194,8 @@ export const ACTIVITY_STATE_URL = '/plugins/dsh-agent-teams/state'
 export const ACTIVITY_HALT_URL = '/plugins/dsh-agent-teams/halt'
 /** Host SSE route that rings when a team mutation is recorded. */
 export const ACTIVITY_EVENTS_URL = '/plugins/dsh-agent-teams/events'
+/** Host route recording a human approval decision on an approval-gated task. */
+export const ACTIVITY_APPROVE_URL = '/plugins/dsh-agent-teams/approve'
 
 interface ActivityFetchResponse {
   readonly ok: boolean

@@ -45,6 +45,7 @@ import {
   usesParallelTaskGrid,
 } from './activity-model.ts'
 import {
+  ACTIVITY_APPROVE_URL,
   ACTIVITY_HALT_URL,
   getActivityMonitorTargetsSnapshot,
   getActivitySnapshotsSnapshot,
@@ -505,6 +506,36 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
     task.status !== 'completed' && task.status !== 'failed' && task.status !== 'cancelled'
   )).length
   const canStop = !historic && team.phase === 'running' && team.halted !== true && teamIsActive(team)
+  const pendingApprovals = team.tasks.filter((task) =>
+    task.requiresApproval === true && task.approvalStatus === 'awaiting')
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null)
+  const [approvalError, setApprovalError] = useState('')
+  const recordApproval = async (taskId: string, approve: boolean): Promise<void> => {
+    if (approvalBusy !== null) return
+    setApprovalBusy(`${taskId}:${approve}`)
+    setApprovalError('')
+    try {
+      const response = await fetch(ACTIVITY_APPROVE_URL, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: team.captainSessionId, teamId: team.teamId, taskId, approve }),
+      })
+      if (!response.ok) {
+        let message = t('task.approval.failed')
+        try {
+          const body = await response.json() as { error?: unknown }
+          if (typeof body.error === 'string' && body.error.trim() !== '') message = body.error
+        } catch {}
+        throw new Error(message)
+      }
+      // The SSE change bus refreshes snapshots; the row disappears on approval.
+    } catch (error: unknown) {
+      setApprovalError(t('task.approval.failed', { message: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setApprovalBusy(null)
+    }
+  }
   const stopTeam = async (): Promise<void> => {
     if (stopping) return
     setStopping(true)
@@ -560,6 +591,39 @@ function TeamSection({ team, modelDirectory, onContinuePlanning, onDiscarded, on
             </button>
           )}
         </header>
+
+        {pendingApprovals.length > 0 && (
+          <section className={css.approvalBlock} data-approvals={pendingApprovals.length}>
+            <strong className={css.approvalTitle}>{t('task.approval.pending')}</strong>
+            {approvalError !== '' && <span className={css.approvalError}>{approvalError}</span>}
+            {pendingApprovals.map((task) => (
+              <div key={task.id} className={css.approvalRow}>
+                <span className={css.approvalTask}>{task.id} · {task.subject}</span>
+                {task.approvalReason !== undefined && task.approvalReason !== '' && (
+                  <span className={css.approvalReason}>{task.approvalReason}</span>
+                )}
+                <button
+                  type="button"
+                  className={css.approvalButton}
+                  data-approve="approve"
+                  disabled={approvalBusy !== null}
+                  onClick={() => { void recordApproval(task.id, true) }}
+                >
+                  {t('task.approval.approve')}
+                </button>
+                <button
+                  type="button"
+                  className={css.approvalButton}
+                  data-approve="reject"
+                  disabled={approvalBusy !== null}
+                  onClick={() => { void recordApproval(task.id, false) }}
+                >
+                  {t('task.approval.reject')}
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
 
         {team.phase === 'staged' && !historic && modelDirectory !== undefined && onContinuePlanning !== undefined && onDiscarded !== undefined && (
           <StagingPlanEditor

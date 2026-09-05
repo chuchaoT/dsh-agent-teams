@@ -35,7 +35,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectArchivedTeamsActivity, collectTeamsActivity } from './snapshot.ts'
-import { findTeamByCaptain } from './state.ts'
+import { findTeamByCaptain, readTeam, withTeamLock, writeTeam } from './state.ts'
+import { appendAuditedTeamEvent } from './events.ts'
+import { TERMINAL_TASK_STATUSES } from './types.ts'
 import { formatProfilesForPrompt, type TeamProfileConfig } from './profiles.ts'
 import { qualityPlanningPrompt } from './quality-gates.ts'
 
@@ -145,8 +147,9 @@ export function usageSectionText(toolNames: string, profilesText = ''): string {
 6. Tasks carry attempt_id capabilities. Members must use the current attempt_id for updates; stale-attempt errors mean ownership changed. Check status after progress notifications until every required task is terminal and every member is idle/ready; do not busy-poll or require reports from members with no assigned work.
 7. If the user names a configured profile / template / fixed roster, pass that name as profile= to agent_teams_create. After a successful profile create, do not recreate the same members. Seed profiles provide their template tasks; captain-planning profiles provide only the roster and guardrails, so you must design their DAG while staged. Add repair or retry tasks when review/test fails, but never make a new task depend on a failed task. Do not send_message to start the next stage; the scheduler assigns ready work after approval. Watch every required task until it is terminal before deleting the team. Never perform a real deployment without explicit user confirmation.
 8. Quality kinds (requirements, implementation, verification, review, repair, integration) need a contract: non-empty objective and acceptance; implementation/repair also need inScope and verify. Review/requirements can complete only with verdict=pass; needs_revision/reject must fail with findings. The system then opens repair + next review that depend on the successful source, never the failed review. Do not approve your own implementation. create_task no longer silently resumes a halted team — call agent_teams_resume with a reason, or create_task({resume:true, resumeReason}).
-9. ${qualityPlanningPrompt()}
-10. Present the team's results to the user, then agent_teams_delete the team unless the user wants to keep working with it. Stopping a team aborts the Captain's current turn as well as member work; only a later explicit user turn may resume it.
+9. A task created with requires_approval=true stays pending and is never auto-dispatched before a human decides. Record the human's confirmed decision with agent_teams_approve_task (or the panel approval button) before expecting it to run; never approve on your own authority, and ask the user when they have not decided.
+10. ${qualityPlanningPrompt()}
+11. Present the team's results to the user, then agent_teams_delete the team unless the user wants to keep working with it. Stopping a team aborts the Captain's current turn as well as member work; only a later explicit user turn may resume it.
 
 Tools: ${toolNames}${profilesText === '' ? '' : `\n\n${profilesText}`}`
 }
@@ -197,6 +200,7 @@ export function apply(ctx: Context, config: Config): void {
     'agent_teams_add_member',
     'agent_teams_remove_member',
     'agent_teams_create_task',
+    'agent_teams_approve_task',
     'agent_teams_reassign_task',
     'agent_teams_claim_task',
     'agent_teams_update_task',
@@ -371,6 +375,96 @@ export function apply(ctx: Context, config: Config): void {
         }
       },
     }), 'agent-teams: halt route')
+
+    // Human approval gate: the browser panel records the user's decision on an
+    // approval-gated task (requires_approval). Same session/team binding and
+    // body handling as the halt route; only an approved task becomes dispatchable.
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-agent-teams/approve',
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { allow: 'POST', 'cache-control': 'no-store' })
+          res.end()
+          return
+        }
+        let raw = ''
+        try {
+          raw = await new Promise<string>((resolve, reject) => {
+            const chunks: Buffer[] = []
+            req.on('data', (chunk) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)) })
+            req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+            req.on('error', reject)
+          })
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'invalid request body' }))
+          return
+        }
+        let payload: { sessionId?: unknown; teamId?: unknown; taskId?: unknown; approve?: unknown; reason?: unknown }
+        try {
+          payload = raw.trim() === '' ? {} : JSON.parse(raw) as typeof payload
+        } catch {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'invalid JSON' }))
+          return
+        }
+        const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : ''
+        const teamId = typeof payload.teamId === 'string' ? payload.teamId.trim() : ''
+        const taskId = typeof payload.taskId === 'string' ? payload.taskId.trim() : ''
+        if (sessionId === '' || teamId === '' || taskId === '') {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'sessionId, teamId and taskId are required' }))
+          return
+        }
+        const approve = payload.approve === true
+        const reason = typeof payload.reason === 'string' && payload.reason.trim() !== '' ? payload.reason.trim() : undefined
+        const captain = ctx.agents.get(sessionId as import('@deepseek-ai/dsh-session').SessionId)
+        if (captain === undefined) {
+          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'captain session is not attached' }))
+          return
+        }
+        const workspace = captain.session.header.cwd ?? process.cwd()
+        const stateRoot = join(workspace, resolved.stateDir)
+        const team = await findTeamByCaptain(stateRoot, captain.id)
+        if (team === undefined || team.id !== teamId) {
+          res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'team not found for this captain' }))
+          return
+        }
+        try {
+          const result = await withTeamLock(`team:${stateRoot}:${teamId}`, async () => {
+            const fresh = await readTeam(stateRoot, teamId)
+            if (fresh === undefined || fresh.captainSessionId !== captain.id) {
+              throw new Error('team is no longer led by this captain')
+            }
+            const task = fresh.tasks.find((candidate) => candidate.id === taskId)
+            if (task === undefined) throw new Error(`no task "${taskId}"`)
+            if (task.requiresApproval !== true) throw new Error(`task ${taskId} is not approval-gated`)
+            if (TERMINAL_TASK_STATUSES.includes(task.status)) throw new Error(`terminal task ${taskId} is immutable`)
+            task.approvalStatus = approve ? 'approved' : 'rejected'
+            task.approvedAt = approve ? Date.now() : undefined
+            task.updatedAt = Date.now()
+            await writeTeam(stateRoot, fresh)
+            appendAuditedTeamEvent(ctx, captain.session, 'agent-teams/task-updated', {
+              teamId: fresh.id,
+              taskId: task.id,
+              status: task.status,
+              ...task.assignee === undefined ? {} : { assignee: task.assignee },
+              ...reason === undefined ? {} : { output: `Approval ${approve ? 'approved' : 'rejected'}: ${reason}` },
+            }, stateRoot, fresh.id)
+            return { taskId: task.id, approvalStatus: task.approvalStatus, status: task.status }
+          })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify(result))
+        } catch (error: unknown) {
+          ctx.logger.warn(`agent-teams: approval failed for ${teamId}/${taskId}: ${String(error)}`)
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ error: 'failed to record the approval decision' }))
+        }
+      },
+    }), 'agent-teams: approval route')
 
     ctx.effect(() => webServer.register({
       kind: 'exact',

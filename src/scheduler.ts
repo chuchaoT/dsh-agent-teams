@@ -233,10 +233,20 @@ export function sortReadyTasks(tasks: readonly TeamTask[]): TeamTask[] {
   })
 }
 
-function nextReadyTask(tasks: readonly TeamTask[], memberName: string): TeamTask | undefined {
-  const ready = tasks.filter(task => task.status === 'pending'
+/**
+ * Whether one task may be claimed right now: pending, not mid-reassignment,
+ * dependencies satisfied, and — for approval-gated tasks — already approved
+ * by a human.
+ */
+export function isDispatchableTask(task: TeamTask, tasks: readonly TeamTask[]): boolean {
+  return task.status === 'pending'
     && task.reassigning !== true
-    && unsatisfiedDependencies([...tasks], task.dependencies).length === 0)
+    && (task.requiresApproval !== true || task.approvalStatus === 'approved')
+    && unsatisfiedDependencies([...tasks], task.dependencies).length === 0
+}
+
+function nextReadyTask(tasks: readonly TeamTask[], memberName: string): TeamTask | undefined {
+  const ready = tasks.filter(task => isDispatchableTask(task, tasks))
   const ordered = sortReadyTasks(ready)
   return ordered.find(task => task.assignee === memberName)
     ?? ordered.find(task => task.assignee === undefined)

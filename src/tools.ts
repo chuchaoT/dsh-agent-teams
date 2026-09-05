@@ -1214,6 +1214,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
       priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Scheduling priority; high-priority ready tasks claim first (default normal).' },
       deadline_at: { type: 'number', description: 'Optional wall-clock deadline in epoch ms; ready tasks closest to a deadline claim first.' },
+      requires_approval: { type: 'boolean', description: 'When true the task stays pending (never auto-dispatched) until a human approves it via the panel or agent_teams_approve_task.' },
+      approval_reason: { type: 'string', description: 'Human-facing reason for the approval request (required with requires_approval).' },
     },
     output: {
       schema: {
@@ -1316,6 +1318,13 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...input.coverageOf === undefined ? {} : { coverageOf: input.coverageOf },
           ...args.priority === undefined ? {} : { priority: args.priority },
           ...args.deadline_at === undefined ? {} : { deadlineAt: args.deadline_at },
+          ...args.requires_approval !== true ? {} : {
+            requiresApproval: true,
+            approvalStatus: 'awaiting' as const,
+            ...(typeof args.approval_reason === 'string' && args.approval_reason.trim() !== ''
+              ? { approvalReason: args.approval_reason.trim() }
+              : {}),
+          },
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
@@ -1338,6 +1347,61 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       })
       await scheduler.kickTeam(workspace, team.id, captain)
       return created
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'agent_teams_approve_task',
+    description: 'Record the human decision on an approval-gated task (requires_approval=true). Approve unlocks scheduling; reject records a rejected state that can be re-approved. Captain only; the panel approval button records the same decision.',
+    parameters: {
+      task_id: { type: 'string', required: true },
+      approve: { type: 'boolean', required: true },
+      reason: { type: 'string', description: 'Why the task is (or is not) approved — recorded in the audit log.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          task_id: { type: 'string', required: true },
+          status: { type: 'string', required: true },
+          approval_status: { type: 'string', required: true },
+        },
+      },
+      render: (args, value) => [{
+        type: 'text',
+        text: `Task ${value.task_id} approval ${value.approval_status} (status ${value.status}).`,
+      }],
+    },
+    async execute(args, exec) {
+      const captain = requireCaptain(exec)
+      const workspace = workspaceOf(captain)
+      const stateRoot = stateRootOf(workspace, config)
+      const team = await requireCaptainTeam(workspace, config, captain)
+      const updated = await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+        const fresh = await requireFreshCaptainTeam(stateRoot, team.id, captain.id)
+        const task = requireTask(fresh, args.task_id)
+        if (task.requiresApproval !== true) {
+          throw new Error(`task ${task.id} is not approval-gated; only requires_approval tasks need agent_teams_approve_task`)
+        }
+        if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+          throw new Error(`terminal task ${task.id} is immutable; approval decision does not apply`)
+        }
+        task.approvalStatus = args.approve ? 'approved' : 'rejected'
+        task.approvedAt = args.approve ? Date.now() : undefined
+        task.updatedAt = Date.now()
+        await writeTeam(stateRoot, fresh)
+        appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, captain.session), 'agent-teams/task-updated', {
+          teamId: fresh.id,
+          taskId: task.id,
+          status: task.status,
+          ...task.assignee === undefined ? {} : { assignee: task.assignee },
+          ...args.reason === undefined ? {} : { output: `Approval ${args.approve ? 'approved' : 'rejected'}: ${args.reason}` },
+        }, stateRoot, fresh.id)
+        return { task_id: task.id, status: task.status, approval_status: task.approvalStatus }
+      })
+      if (args.approve) await scheduler.kickTeam(workspace, team.id, captain)
+      return updated
     },
   }))
 
@@ -1987,6 +2051,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         ...task.artifacts === undefined || task.artifacts.length === 0
           ? {}
           : { artifact_ids: task.artifacts.map((artifact) => artifact.artifactId) },
+        ...task.requiresApproval === undefined ? {} : { requires_approval: task.requiresApproval },
+        ...task.approvalStatus === undefined ? {} : { approval_status: task.approvalStatus },
+        ...task.approvalReason === undefined ? {} : { approval_reason: task.approvalReason },
       }))
       const mailboxWarnings: string[] = []
       let mailboxWarningCount = 0

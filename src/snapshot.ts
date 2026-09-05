@@ -58,6 +58,9 @@ export interface TeamActivityTask {
   readonly artifactIds?: readonly string[]
   readonly priority?: 'low' | 'normal' | 'high'
   readonly deadlineAt?: number
+  readonly requiresApproval?: boolean
+  readonly approvalStatus?: 'awaiting' | 'approved' | 'rejected'
+  readonly approvalReason?: string
 }
 
 /** One captain-inbox preview row. */
@@ -204,6 +207,9 @@ export async function assembleTeamSnapshot(
         : { artifactIds: task.artifacts.map((artifact) => artifact.artifactId) },
       ...task.priority === undefined ? {} : { priority: task.priority },
       ...task.deadlineAt === undefined ? {} : { deadlineAt: task.deadlineAt },
+      ...task.requiresApproval === undefined ? {} : { requiresApproval: task.requiresApproval },
+      ...task.approvalStatus === undefined ? {} : { approvalStatus: task.approvalStatus },
+      ...task.approvalReason === undefined ? {} : { approvalReason: task.approvalReason },
     })),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),

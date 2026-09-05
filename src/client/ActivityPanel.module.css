@@ -334,6 +334,61 @@
   cursor: help;
 }
 
+.approvalBlock {
+  display: grid;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-line-strong, #b58f1e);
+  border-radius: 8px;
+  background: var(--dsw-alias-fill-soft, rgba(255, 214, 90, 0.08));
+  font-size: 11px;
+}
+
+.approvalTitle {
+  color: var(--dsw-alias-label-primary);
+}
+
+.approvalError {
+  color: var(--dsw-alias-color-danger, #d33);
+}
+
+.approvalRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.approvalTask {
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.approvalReason {
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.approvalButton {
+  padding: 2px 10px;
+  border: 1px solid var(--dsw-alias-line-normal);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.approvalButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.approvalButton[data-approve='approve'] {
+  border-color: var(--dsw-alias-color-success, #2a9d3f);
+}
+
 .teamStopButton {
   display: grid;
   width: 26px;

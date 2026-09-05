@@ -1041,6 +1041,13 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && (value['priority'] === undefined
       || value['priority'] === 'low' || value['priority'] === 'normal' || value['priority'] === 'high')
     && (value['deadlineAt'] === undefined || isFiniteNumber(value['deadlineAt']))
+    && (value['requiresApproval'] === undefined || typeof value['requiresApproval'] === 'boolean')
+    && (value['approvalStatus'] === undefined
+      || value['approvalStatus'] === 'awaiting'
+      || value['approvalStatus'] === 'approved'
+      || value['approvalStatus'] === 'rejected')
+    && (value['approvalReason'] === undefined || isOptionalString(value['approvalReason']))
+    && (value['approvedAt'] === undefined || isFiniteNumber(value['approvedAt']))
     && (value['evidence'] === undefined || Array.isArray(value['evidence']))
     && (value['artifacts'] === undefined || Array.isArray(value['artifacts']))
     && isFiniteNumber(value['createdAt'])

@@ -156,6 +156,17 @@ export interface TeamTask {
   priority?: 'low' | 'normal' | 'high'
   /** Optional deadline wall-clock; ready tasks closest to it claim first. */
   deadlineAt?: number
+  /**
+   * Human approval gate: when `true` the task stays pending until a human
+   * approves it (panel button or agent_teams_approve_task). It never auto-
+   * dispatches while `approvalStatus` is absent/'awaiting'.
+   */
+  requiresApproval?: boolean
+  approvalStatus?: 'awaiting' | 'approved' | 'rejected'
+  /** Human-facing reason shown on the approval request. */
+  approvalReason?: string
+  /** When the human approved (denial is recorded via the audit log). */
+  approvedAt?: number
   reviewedTaskId?: string
   reviewedAttempt?: number
   /** Repair source: the implementation / previous successful artifact. */
