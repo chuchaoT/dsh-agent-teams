@@ -118,7 +118,16 @@ test('cross-process lock serializes concurrent holders', async (t) => {
     order.push('second-end')
   })
   await Promise.all([first, second])
-  assert.deepEqual(order, ['first-start', 'first-end', 'second-start', 'second-end'])
+  // Mutual exclusion is the guarantee; the winner is not deterministic
+  // (both lock attempts start concurrently). Neither holder may overlap:
+  // one interval fully precedes the other.
+  const firstStart = order.indexOf('first-start')
+  const firstEnd = order.indexOf('first-end')
+  const secondStart = order.indexOf('second-start')
+  const secondEnd = order.indexOf('second-end')
+  assert.ok(firstStart !== -1 && firstEnd !== -1 && secondStart !== -1 && secondEnd !== -1)
+  assert.ok(firstStart < firstEnd && secondStart < secondEnd)
+  assert.ok(firstEnd <= secondStart || secondEnd <= firstStart)
 })
 
 test('cross-process lock reclaims stale lock files', async (t) => {

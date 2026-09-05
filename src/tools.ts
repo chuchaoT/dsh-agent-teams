@@ -67,6 +67,13 @@ import {
 } from './members.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 import { refreshAttemptHeartbeat } from './attempts.ts'
+import { summarizeEvidence } from './evidence.ts'
+import {
+  buildCommandEvidence,
+  parseAcceptanceResults,
+  parseCommandResults,
+  parseFindings,
+} from './tools-parse.ts'
 import { installTeamScheduler } from './scheduler.ts'
 import { resolveTeamProfile } from './profiles.ts'
 
@@ -1612,6 +1619,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           output: { type: 'string' },
           attempt: { type: 'number', required: true },
           attempt_id: { type: 'string' },
+          evidence_summary: { type: 'string', description: 'Normalized two-layer evidence summary for the recorded commandsRun (host-observed lines carry exit codes and stdout hashes).' },
         },
       },
       render: (args, value) => [{
@@ -1681,7 +1689,15 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         if (findings !== undefined) task.findings = findings
         if (input.changedPaths !== undefined) task.changedPaths = input.changedPaths
         if (acceptanceResults !== undefined) task.acceptanceResults = acceptanceResults
-        if (commandsRun !== undefined) task.commandsRun = commandsRun
+        if (commandsRun !== undefined) {
+          task.commandsRun = commandsRun
+          task.evidence = buildCommandEvidence(
+            fresh.id,
+            task.id,
+            task.attemptId ?? (args.attempt_id as string | undefined),
+            commandsRun,
+          )
+        }
         if (TERMINAL_TASK_STATUSES.includes(task.status)) {
           task.updatedAt = Date.now()
         } else {
@@ -1726,6 +1742,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           attempt: task.attempt ?? 0,
           ...task.attemptId === undefined ? {} : { attempt_id: task.attemptId },
           ...task.output !== undefined ? { output: task.output } : {},
+          ...task.evidence === undefined ? {} : { evidence_summary: summarizeEvidence(task.evidence, 600) },
         }
       })
       await scheduler.kickTeam(workspace, team.id, team.captainSessionId === caller.id ? caller : undefined)
@@ -2221,79 +2238,6 @@ async function initializeProfileTeam(input: {
     }
     throw error
   }
-}
-
-function parseFindings(value: unknown): ReviewFinding[] | undefined {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value)) throw new Error('findings must be an array')
-  return value.map((item, index) => {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      throw new Error(`findings[${index}] must be an object`)
-    }
-    const raw = item as Record<string, unknown>
-    if (typeof raw['id'] !== 'string' || raw['id'].trim() === '') throw new Error(`findings[${index}].id is required`)
-    if (raw['severity'] !== 'low' && raw['severity'] !== 'medium' && raw['severity'] !== 'high' && raw['severity'] !== 'blocker') {
-      throw new Error(`findings[${index}].severity is invalid`)
-    }
-    if (typeof raw['problem'] !== 'string' || raw['problem'].trim() === '') throw new Error(`findings[${index}].problem is required`)
-    if (typeof raw['requiredFix'] !== 'string' || raw['requiredFix'].trim() === '') throw new Error(`findings[${index}].requiredFix is required`)
-    return {
-      id: raw['id'].trim(),
-      severity: raw['severity'],
-      problem: raw['problem'],
-      requiredFix: raw['requiredFix'],
-      // A blank optional file must be omitted, not persisted: durable-state
-      // validation requires non-empty optional strings (issue #105 class).
-      ...typeof raw['file'] === 'string' && raw['file'].trim() !== '' ? { file: raw['file'] } : {},
-      ...typeof raw['line'] === 'number' ? { line: raw['line'] } : {},
-      ...typeof raw['resolved'] === 'boolean' ? { resolved: raw['resolved'] } : {},
-    }
-  })
-}
-
-function parseAcceptanceResults(value: unknown): AcceptanceResult[] | undefined {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value)) throw new Error('acceptanceResults must be an array')
-  return value.map((item, index) => {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      throw new Error(`acceptanceResults[${index}] must be an object`)
-    }
-    const raw = item as Record<string, unknown>
-    if (typeof raw['criterion'] !== 'string' || raw['criterion'].trim() === '') {
-      throw new Error(`acceptanceResults[${index}].criterion is required`)
-    }
-    if (raw['status'] !== 'passed' && raw['status'] !== 'failed') {
-      throw new Error(`acceptanceResults[${index}].status must be passed or failed`)
-    }
-    return {
-      criterion: raw['criterion'],
-      status: raw['status'],
-      ...typeof raw['evidence'] === 'string' ? { evidence: raw['evidence'] } : {},
-    }
-  })
-}
-
-function parseCommandResults(value: unknown): CommandResult[] | undefined {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value)) throw new Error('commandsRun must be an array')
-  return value.map((item, index) => {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      throw new Error(`commandsRun[${index}] must be an object`)
-    }
-    const raw = item as Record<string, unknown>
-    if (typeof raw['command'] !== 'string' || raw['command'].trim() === '') {
-      throw new Error(`commandsRun[${index}].command is required`)
-    }
-    if (raw['status'] !== 'passed' && raw['status'] !== 'failed') {
-      throw new Error(`commandsRun[${index}].status must be passed or failed`)
-    }
-    return {
-      command: raw['command'],
-      status: raw['status'],
-      ...typeof raw['exitCode'] === 'number' ? { exitCode: raw['exitCode'] } : {},
-      ...typeof raw['evidence'] === 'string' ? { evidence: raw['evidence'] } : {},
-    }
-  })
 }
 
 export function applyQualityFollowUp(team: TeamState, closed: TeamTask): { created: TeamTask[]; escalated: boolean } {

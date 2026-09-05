@@ -8,6 +8,8 @@
  * @module dsh-agent-teams/types
  */
 
+import type { EvidenceRecord } from './evidence.ts'
+
 /** Task lifecycle statuses in progression order. */
 export type TaskStatus =
   | 'pending'
@@ -137,6 +139,12 @@ export interface TeamTask {
   changedPaths?: string[]
   acceptanceResults?: AcceptanceResult[]
   commandsRun?: CommandResult[]
+  /**
+   * Normalized two-layer evidence records (host-observed or member-declared)
+   * attached to the latest completion. The raw `commandsRun` array keeps its
+   * model-facing contract; this field carries the auditable normalization.
+   */
+  evidence?: EvidenceRecord[]
   reviewedTaskId?: string
   reviewedAttempt?: number
   /** Repair source: the implementation / previous successful artifact. */
