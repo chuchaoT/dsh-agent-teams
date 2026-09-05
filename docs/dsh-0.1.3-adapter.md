@@ -42,3 +42,31 @@ A dual-version adapter (alpha.2 + alpha.3 shims) keeps the verified pair
 working while the next host line lands. The facade boundary is the migration
 contract: business code never imports `dsh-session` internals directly
 beyond `src/host/session-host.ts` and `src/events.ts`.
+
+## Applied: 0.1.2-alpha.5 adapter (branch `feat/dsh-0.1.2-alpha5`)
+
+The npm line moved on to `0.1.2-alpha.5` (alpha.3/4/5 published on npm; the
+GitHub `0.1.3-alpha.1` tag is not yet on npm). The alpha5 branch is migrated
+and green on the alpha.5 dependency graph:
+
+- `package.json` devDependencies/peerDependencies: `0.1.2-alpha.2` →
+  `0.1.2-alpha.5` (45 references; full graph one generation).
+- `src/host/subagent-host.ts`: **SubagentHost facade**. Alpha.5 replaced
+  `ctx.subagents.followup(...)` with unified steering
+  (`sendMessage(sender, targetId, content, {signal})`) and dropped
+  `registerContinuableSetup`. The facade probes the surface: `wakeMember`
+  uses sendMessage when present, else followup; `installRetiredMemberGuard`
+  patches whichever surface exists.
+- `src/members.ts`: `installMemberSelectionRuntime` degrades gracefully —
+  no setup hook → global `agent/error` membership-scoped failure observation
+  (`installGlobalFailureObservation`); model routes are restored by the host
+  itself from the durable descriptor on this generation. The legacy setup
+  branch (alpha.2 hosts) stays and reads session events through a width
+  bridge so it compiles on both type surfaces.
+- `pnpm-workspace.yaml`/`.npmrc`: `minimumReleaseAge: 0` /
+  `minimum-release-age=0` so the newest alpha installs the day it publishes.
+
+Verification on this branch: `pnpm typecheck` + `pnpm build` + `pnpm verify`
+green (no host processes involved; the e2e UI acceptance still needs a real
+alpha.5 host run inside a DSH profile).
+

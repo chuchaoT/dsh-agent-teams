@@ -19,10 +19,11 @@ import { foldSubagentDescriptor, SubagentError } from '@deepseek-ai/dsh-subagent
 import { createUserMessage, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { join } from 'node:path'
-import { acknowledgeMailbox, appendMailbox, CAPTAIN_KEY, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
+import { acknowledgeMailbox, appendMailbox, CAPTAIN_KEY, createMessage, findTeamByParticipant, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { appendAuditedTeamEvent, captainSessionOf } from './events.ts'
 import { appendTeamTelemetry } from './state.ts'
 import { createTelemetryRecord } from './telemetry.ts'
+import { createSubagentHost } from './host/subagent-host.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
@@ -378,10 +379,35 @@ export function installMemberSelectionRuntime(
   onFailureSettled?: (workspace: string, teamId: string, memberName: string) => Promise<void>,
 ): MemberSelectionRuntime {
   const pending = new Map<string, MemberLlmSelection>()
-  ctx.subagents.registerContinuableSetup((childCtx) => {
+  const setupHook = (ctx.subagents as unknown as {
+    registerContinuableSetup?: (setup: (childCtx: Context) => unknown) => void
+  }).registerContinuableSetup
+  if (typeof setupHook !== 'function') {
+    // Alpha.5+ dropped the global child-setup hook. Model routes are restored
+    // by the host itself from the durable descriptor; failure observation
+    // moves to global agent/error filtering by membership. The per-child
+    // setup install (model selection / request-level fallback) has no
+    // host equivalent on this generation and is skipped explicitly.
+    ctx.logger.info('agent-teams: no continuable setup hook on this host; member model routes are restored from the durable descriptor, failures observed globally')
+    installGlobalFailureObservation(ctx, stateDir, onFailureSettled)
+    return {
+      withPending<T>(parentSessionId: string, label: string, selection: MemberLlmSelection, operation: () => Promise<T>): Promise<T> {
+        pending.set(pendingSelectionKey(parentSessionId, label), selection)
+        return operation().finally(() => { pending.delete(pendingSelectionKey(parentSessionId, label)) })
+      },
+    }
+  }
+  setupHook((childCtx) => {
     const child = childCtx.agent
     if (child === undefined) return () => undefined
-    const suffix = child.session.events.slice(child.session.header.seedLength ?? 0)
+    // This setup branch only exists on hosts that still expose the hook
+    // (alpha.2 generation), where Session.events and header.seedLength exist.
+    // The alpha.5 type surface removed them, so access is width-bridged.
+    const sessionLike = child.session as unknown as {
+      readonly events?: readonly import('@deepseek-ai/dsh-session').SessionEvent[]
+      readonly header: { readonly seedLength?: number }
+    }
+    const suffix = sessionLike.events?.slice(sessionLike.header.seedLength ?? 0) ?? []
     const descriptor = foldSubagentDescriptor(suffix)
     if (descriptor?.mode !== 'continuable' || !descriptor.label.startsWith(MEMBER_LABEL_PREFIX)) {
       return () => undefined
@@ -500,6 +526,48 @@ export function installMemberSelectionRuntime(
       }
     },
   }
+}
+
+/**
+ * Alpha.5+ failure observation: no child setup hook exists, so member turn
+ * failures are detected globally by membership lookup. The scheduler's
+ * agent/status observer still owns idle/working sync; this path only reports
+ * the terminal failure and notifies the captain.
+ */
+function installGlobalFailureObservation(
+  ctx: Context,
+  stateDir: string,
+  onFailureSettled?: (workspace: string, teamId: string, memberName: string) => Promise<void>,
+): void {
+  const lastTurnByAgent = new Map<string, number>()
+  ctx.on('agent/error', (payload) => {
+    const agent = payload.agent
+    const agentId = agent.id
+    if (lastTurnByAgent.get(agentId) === payload.turn) return
+    lastTurnByAgent.set(agentId, payload.turn)
+    void (async () => {
+      const workspace = agent.session.header.cwd ?? process.cwd()
+      const stateRoot = join(workspace, stateDir)
+      const team = await findTeamByParticipant(stateRoot, agentId)
+      if (team === undefined) return
+      const member = team.members.find(candidate => candidate.id === agentId && candidate.status !== 'removed')
+      if (member === undefined) return
+      const task = team.tasks.find(candidate => candidate.assignee === member.name
+        && (candidate.status === 'claimed' || candidate.status === 'in_progress'))
+      const failure = payload.error instanceof LlmError ? payload.error.failure : {
+        code: 'UNKNOWN',
+        message: payload.error instanceof Error ? payload.error.message : String(payload.error),
+      }
+      const recorded = await failMemberOpenAttempt(ctx, stateRoot, team.id, member.name, failure, agent.session, {
+        captainSessionId: team.captainSessionId,
+        memberId: agentId,
+        task,
+      })
+      if (recorded) await onFailureSettled?.(workspace, team.id, member.name)
+    })().catch((error: unknown) => {
+      ctx.logger.warn(`agent-teams: global member failure observation failed for ${agentId}: ${String(error)}`)
+    })
+  })
 }
 
 function configuredExecutionPrompt(member: TeamMember, config: MemberRuntimeConfig): string | undefined {
@@ -669,16 +737,7 @@ export async function deliverToMember(
   text: string,
   signal: AbortSignal,
 ): Promise<boolean> {
-  try {
-    await ctx.subagents.followup(captain, brandedSessionId(childId), [{ type: 'text', text }], {
-      source: { kind: 'plugin', plugin: 'dsh-agent-teams' },
-      signal,
-    })
-    return true
-  } catch (error: unknown) {
-    ctx.logger.warn(`agent-teams: followup to member ${childId} failed: ${String(error)}`)
-    return false
-  }
+  return createSubagentHost(ctx).wakeMember(captain, childId, text, signal)
 }
 
 /**
@@ -689,11 +748,7 @@ export async function deliverToMember(
  * @param childId - the member's durable child session id.
  */
 export function interruptMember(ctx: Context, captain: Agent, childId: string): void {
-  try {
-    ctx.subagents.interrupt(brandedSessionId(childId), { kind: 'ancestor', agent: captain })
-  } catch (error: unknown) {
-    ctx.logger.warn(`agent-teams: interrupt of member ${childId} failed: ${String(error)}`)
-  }
+  createSubagentHost(ctx).interruptMember(captain, childId)
 }
 
 /**
@@ -709,10 +764,13 @@ export function interruptMember(ctx: Context, captain: Agent, childId: string): 
  * untouched while the followup boundary still prevents further model turns.
  */
 export function installRetiredMemberGuard(ctx: Context, stateDir: string): void {
-  const runtime = ctx.subagents
+  const runtime = createSubagentHost(ctx).runtime
   ctx.effect(() => {
-    const followup = runtime.followup
-    const guardedFollowup: typeof runtime.followup = async (parent, childId, content, options) => {
+    const guardPath = async (
+      parent: Agent,
+      childId: SessionId,
+      proceed: () => Promise<unknown>,
+    ): Promise<unknown> => {
       const retired = await readRetiredMemberIds(join(parent.session.header.cwd ?? process.cwd(), stateDir))
       if (retired.has(childId)) {
         throw new SubagentError(
@@ -720,13 +778,25 @@ export function installRetiredMemberGuard(ctx: Context, stateDir: string): void 
           'NOT_RESUMABLE',
         )
       }
-      return followup.call(runtime, parent, childId, content, options)
+      return proceed()
     }
-
-    runtime.followup = guardedFollowup
-    return () => {
-      if (runtime.followup === guardedFollowup) runtime.followup = followup
+    if (typeof runtime.followup === 'function') {
+      const original = runtime.followup
+      const guarded: typeof runtime.followup = async (parent, childId, content, options) => (
+        guardPath(parent, childId, () => original.call(runtime, parent, childId, content, options))
+      )
+      runtime.followup = guarded
+      return () => { if (runtime.followup === guarded) runtime.followup = original }
     }
+    if (typeof runtime.sendMessage === 'function') {
+      const original = runtime.sendMessage
+      const guarded: typeof runtime.sendMessage = async (sender, targetId, content, options) => (
+        guardPath(sender, targetId, () => original.call(runtime, sender, targetId, content, options))
+      )
+      runtime.sendMessage = guarded
+      return () => { if (runtime.sendMessage === guarded) runtime.sendMessage = original }
+    }
+    return () => {}
   }, 'agent-teams: retired member guard')
 }
 
