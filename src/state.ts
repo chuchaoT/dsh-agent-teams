@@ -995,6 +995,11 @@ export function isTeamTask(value: unknown): value is TeamTask {
     && isOptionalString(value['attemptId'])
     && isOptionalString(value['handoffId'])
     && (value['reassigning'] === undefined || typeof value['reassigning'] === 'boolean')
+    && (value['priority'] === undefined
+      || value['priority'] === 'low' || value['priority'] === 'normal' || value['priority'] === 'high')
+    && (value['deadlineAt'] === undefined || isFiniteNumber(value['deadlineAt']))
+    && (value['evidence'] === undefined || Array.isArray(value['evidence']))
+    && (value['artifacts'] === undefined || Array.isArray(value['artifacts']))
     && isFiniteNumber(value['createdAt'])
     && isFiniteNumber(value['updatedAt'])
     && hasValidQualityTaskFields(value)

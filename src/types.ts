@@ -9,6 +9,7 @@
  */
 
 import type { EvidenceRecord } from './evidence.ts'
+import type { ArtifactRef } from './artifacts.ts'
 
 /** Task lifecycle statuses in progression order. */
 export type TaskStatus =
@@ -145,6 +146,16 @@ export interface TeamTask {
    * model-facing contract; this field carries the auditable normalization.
    */
   evidence?: EvidenceRecord[]
+  /**
+   * Typed artifacts produced by the latest completion (or an earlier repair
+   * round). Downstream tasks reference artifact ids instead of copying long
+   * outputs; content stays on disk under `<teamDir>/artifacts/<id>.json`.
+   */
+  artifacts?: ArtifactRef[]
+  /** Scheduling priority: `high` first, then `normal`, then `low`. */
+  priority?: 'low' | 'normal' | 'high'
+  /** Optional deadline wall-clock; ready tasks closest to it claim first. */
+  deadlineAt?: number
   reviewedTaskId?: string
   reviewedAttempt?: number
   /** Repair source: the implementation / previous successful artifact. */

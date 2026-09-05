@@ -193,12 +193,33 @@ function ownedOpenTask(tasks: readonly TeamTask[], memberName: string): TeamTask
     && (task.status === 'claimed' || task.status === 'in_progress'))
 }
 
+const PRIORITY_RANK: Readonly<Record<'low' | 'normal' | 'high', number>> = {
+  high: 0,
+  normal: 1,
+  low: 2,
+}
+
+/**
+ * Order ready tasks for fair claiming: higher priority first, then nearest
+ * deadline, then oldest creation. Ties keep their original order (stable).
+ */
+export function sortReadyTasks(tasks: readonly TeamTask[]): TeamTask[] {
+  return [...tasks].sort((a, b) => {
+    const rankDelta = (PRIORITY_RANK[a.priority ?? 'normal'] ?? 1) - (PRIORITY_RANK[b.priority ?? 'normal'] ?? 1)
+    if (rankDelta !== 0) return rankDelta
+    const deadlineDelta = (a.deadlineAt ?? Number.POSITIVE_INFINITY) - (b.deadlineAt ?? Number.POSITIVE_INFINITY)
+    if (deadlineDelta !== 0) return deadlineDelta
+    return (a.createdAt ?? 0) - (b.createdAt ?? 0)
+  })
+}
+
 function nextReadyTask(tasks: readonly TeamTask[], memberName: string): TeamTask | undefined {
   const ready = tasks.filter(task => task.status === 'pending'
     && task.reassigning !== true
     && unsatisfiedDependencies([...tasks], task.dependencies).length === 0)
-  return ready.find(task => task.assignee === memberName)
-    ?? ready.find(task => task.assignee === undefined)
+  const ordered = sortReadyTasks(ready)
+  return ordered.find(task => task.assignee === memberName)
+    ?? ordered.find(task => task.assignee === undefined)
 }
 
 export function assignmentPrompt(ticket: DispatchTicket, stateDir: string, teamId: string): string {

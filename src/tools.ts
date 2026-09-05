@@ -74,6 +74,12 @@ import {
   parseCommandResults,
   parseFindings,
 } from './tools-parse.ts'
+import {
+  computeArtifactRecord,
+  createArtifactRef,
+  writeArtifactFile,
+  type ArtifactKind,
+} from './artifacts.ts'
 import { installTeamScheduler } from './scheduler.ts'
 import { resolveTeamProfile } from './profiles.ts'
 
@@ -1203,6 +1209,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       coverageOf: { type: 'array', items: { type: 'string' }, description: 'User-constraint / goal items this task covers.' },
       resume: { type: 'boolean', description: 'If true, clear halted in the same lock before creating the task.' },
       resumeReason: { type: 'string', description: 'Required non-empty reason when resume=true.' },
+      priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Scheduling priority; high-priority ready tasks claim first (default normal).' },
+      deadline_at: { type: 'number', description: 'Optional wall-clock deadline in epoch ms; ready tasks closest to a deadline claim first.' },
     },
     output: {
       schema: {
@@ -1303,6 +1311,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...input.sourceTaskId === undefined ? {} : { sourceTaskId: input.sourceTaskId },
           ...input.sourceFindingIds === undefined ? {} : { sourceFindingIds: input.sourceFindingIds },
           ...input.coverageOf === undefined ? {} : { coverageOf: input.coverageOf },
+          ...args.priority === undefined ? {} : { priority: args.priority },
+          ...args.deadline_at === undefined ? {} : { deadlineAt: args.deadline_at },
         }
         fresh.taskSeq += 1
         fresh.tasks.push(task)
@@ -1620,6 +1630,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           attempt: { type: 'number', required: true },
           attempt_id: { type: 'string' },
           evidence_summary: { type: 'string', description: 'Normalized two-layer evidence summary for the recorded commandsRun (host-observed lines carry exit codes and stdout hashes).' },
+          artifact_id: { type: 'string', description: 'Typed artifact id persisted for a completed task with output content.' },
         },
       },
       render: (args, value) => [{
@@ -1698,6 +1709,30 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             commandsRun,
           )
         }
+        // Typed artifact: a completed task with a non-empty output is archived
+        // into the team's artifact store and referenced by id, so downstream
+        // tasks can read content on demand instead of copying long text.
+        // Artifact persistence is a best-effort augmentation: a storage
+        // failure must never fail the task completion itself.
+        if (task.status === 'completed' && task.output !== undefined && task.output.trim() !== '') {
+          try {
+            const record = computeArtifactRecord({
+              teamId: fresh.id,
+              taskId: task.id,
+              ...task.attemptId === undefined ? {} : { attemptId: task.attemptId },
+              kind: artifactKindOf(task.kind ?? 'work'),
+              contentType: 'text/markdown',
+              content: task.output,
+              summary: task.subject,
+              producer: identity.kind === 'member' ? 'member' : 'host',
+              ...task.sourceTaskId === undefined ? {} : { sourceTaskId: task.sourceTaskId },
+            })
+            await writeArtifactFile(stateRoot, record, task.output)
+            task.artifacts = [createArtifactRef(record, task.id)]
+          } catch (error: unknown) {
+            ctx.logger.warn(`agent-teams: artifact persistence failed for ${task.id} of team ${fresh.id}: ${String(error)}`)
+          }
+        }
         if (TERMINAL_TASK_STATUSES.includes(task.status)) {
           task.updatedAt = Date.now()
         } else {
@@ -1736,6 +1771,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
             ...created.round === undefined ? {} : { round: created.round },
           }, stateRoot, fresh.id)
         }
+        const firstArtifact = task.artifacts?.[0]
         return {
           task_id: task.id,
           status: task.status,
@@ -1743,6 +1779,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ...task.attemptId === undefined ? {} : { attempt_id: task.attemptId },
           ...task.output !== undefined ? { output: task.output } : {},
           ...task.evidence === undefined ? {} : { evidence_summary: summarizeEvidence(task.evidence, 600) },
+          ...firstArtifact === undefined ? {} : { artifact_id: firstArtifact.artifactId },
         }
       })
       await scheduler.kickTeam(workspace, team.id, team.captainSessionId === caller.id ? caller : undefined)
@@ -2237,6 +2274,19 @@ async function initializeProfileTeam(input: {
       throw new AggregateError([error, ...cleanupErrors], `failed to initialize profile "${profile.name}"`)
     }
     throw error
+  }
+}
+
+/** Map a quality-gate task kind to a typed artifact kind for completion. */
+function artifactKindOf(kind: TaskKind): ArtifactKind {
+  switch (kind) {
+    case 'requirements': return 'requirements'
+    case 'implementation':
+    case 'repair': return 'code_diff'
+    case 'verification': return 'test_report'
+    case 'review': return 'security_report'
+    case 'integration': return 'release_package'
+    default: return 'generic'
   }
 }
 
