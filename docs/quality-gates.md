@@ -59,7 +59,7 @@
 - 把 `create_task` 自动 unhalt 改成显式 `resume`。
 - 增加 Captain coverage matrix / 阶段汇总。
 - 增加强制 TDD 脚本，并让 `pnpm verify` 运行它。
-- 更新 `docs/usage.md`、`README.md`、`README_ZH.md` 中与本功能直接相关的说明。
+- 更新 `docs/usage.md`、`README.md` 中与本功能直接相关的说明。
 - 复用现有 DAG、attempt、mailbox、halt、scheduler。
 
 ### 2.2 不可以做
@@ -571,7 +571,7 @@ Captain 或系统在 status 中投影：
 - `src/members.ts` persona。
 - `src/scheduler.ts` assignmentPrompt。
 - `docs/usage.md`。
-- `README.md` / `README_ZH.md` 各加一小节，说明质量门禁存在，细节指向本文。
+- `README.md` 加一小节，说明质量门禁存在，细节指向本文。
 
 不要把本文全文贴进 usage prompt。prompt 只保留机器规则摘要。
 
@@ -741,7 +741,7 @@ TDD 脚本优先测纯函数：
 | `scripts/quality-gates-tdd.mjs` | 强制 TDD |
 | `scripts/verify.mjs` | 少量纯函数补充 |
 | `scripts/lifecycle-verify.mjs` | 工具闭环 |
-| `docs/usage.md`、`README.md`、`README_ZH.md` | 用户可见说明 |
+| `docs/usage.md`、`README.md` | 用户可见说明 |
 
 客户端最小要求：
 
