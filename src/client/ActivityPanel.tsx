@@ -164,6 +164,7 @@ function taskTitle(task: ActivityTask, model: string): string {
   const extras = [
     task.kind,
     task.round === undefined ? undefined : `r${task.round}`,
+    task.stage,
     task.verdict,
     task.priority === undefined || task.priority === 'normal' ? undefined : task.priority,
     task.evidenceCount === undefined || task.evidenceCount === 0 ? undefined : `ev${task.evidenceCount}`,
@@ -463,6 +464,16 @@ function DependencyMap({ tasks, members, t, discarded = false }: {
             {detailModel !== '' && (
               <span className={css.taskDetailModel} data-task-model={detailModel}>
                 {t('task.model', { model: detailModel })}
+              </span>
+            )}
+            {detailTask.evidencePreview !== undefined && detailTask.evidencePreview !== '' && (
+              <span className={css.taskDetailEvidence} title={t('task.detail.evidence')}>
+                {t('task.detail.evidence')}: {detailTask.evidencePreview}
+              </span>
+            )}
+            {detailTask.artifactSummary !== undefined && detailTask.artifactSummary !== '' && (
+              <span className={css.taskDetailEvidence} title={t('task.detail.artifacts')}>
+                {t('task.detail.artifacts')}: {detailTask.artifactSummary}
               </span>
             )}
             <span className={css.taskDetailMeta}>{dependents.length === 0

@@ -389,6 +389,16 @@
   border-color: var(--dsw-alias-color-success, #2a9d3f);
 }
 
+.taskDetailEvidence {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 10.5px;
+}
+
 .teamStopButton {
   display: grid;
   width: 26px;

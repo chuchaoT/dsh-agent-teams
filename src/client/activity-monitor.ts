@@ -39,6 +39,9 @@ export interface ActivityTask {
   readonly requiresApproval?: boolean
   readonly approvalStatus?: 'awaiting' | 'approved' | 'rejected'
   readonly approvalReason?: string
+  readonly stage?: string
+  readonly evidencePreview?: string
+  readonly artifactSummary?: string
 }
 
 /** One captain-inbox preview row. */

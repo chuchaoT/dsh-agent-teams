@@ -17,6 +17,7 @@ import {
   taskDepthsById, taskVisualState,
 } from './state.ts'
 import { summarizeTelemetry, type RunTelemetryRecord } from './telemetry.ts'
+import { summarizeEvidence } from './evidence.ts'
 import type { MemberStatus, TeamState, TeamTask } from './types.ts'
 
 /** Visual task state for the activity panel. */
@@ -62,6 +63,10 @@ export interface TeamActivityTask {
   readonly approvalStatus?: 'awaiting' | 'approved' | 'rejected'
   readonly approvalReason?: string
   readonly stage?: string
+  /** Short evidence summary shown in the detail drawer (cap 160 chars). */
+  readonly evidencePreview?: string
+  /** Short artifact summary shown in the detail drawer. */
+  readonly artifactSummary?: string
 }
 
 /** One captain-inbox preview row. */
@@ -212,6 +217,12 @@ export async function assembleTeamSnapshot(
       ...task.approvalStatus === undefined ? {} : { approvalStatus: task.approvalStatus },
       ...task.approvalReason === undefined ? {} : { approvalReason: task.approvalReason },
       ...task.stage === undefined ? {} : { stage: task.stage },
+      ...task.evidence === undefined || task.evidence.length === 0
+        ? {}
+        : { evidencePreview: summarizeEvidence(task.evidence, 160) },
+      ...task.artifacts === undefined || task.artifacts.length === 0
+        ? {}
+        : { artifactSummary: task.artifacts.map((artifact) => `${artifact.artifactId} (${artifact.kind})`).join(', ') },
     })),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),
