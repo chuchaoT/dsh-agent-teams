@@ -41,6 +41,7 @@ import { qualityPlanningPrompt } from './quality-gates.ts'
 
 import { authenticatedWebRoutes, type BrowserRequestGate, type WebRouteHost } from './web-routes.ts'
 import { checkCompatibility, detectDshCapabilities, resolveWebServerKey, resolveWorkspaceKey } from './host/capabilities.ts'
+import { teamChangeBus } from './host/team-events.ts'
 
 export const name = 'agent-teams'
 export const inject = ['tools', 'llm', 'subagents', 'systemPrompt', 'agents']
@@ -271,6 +272,37 @@ export function apply(ctx: Context, config: Config): void {
       res.end(body)
     },
   }), 'agent-teams: activity route')
+
+    // Incremental refresh trigger (SSE): the browser panel keeps reading the
+    // durable state route above; this channel only rings the bell when a team
+    // mutation is recorded, so panels refetch immediately instead of polling
+    // at one-second cadence. A dropped connection degrades to the client's
+    // low-frequency probe — the connection carries no authoritative data.
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: '/plugins/dsh-agent-teams/events',
+      handler: async (req, res) => {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+        })
+        res.write(': connected\n\n')
+        const unsubscribe = teamChangeBus.subscribe((teamId) => {
+          res.write(`event: changed\ndata: ${JSON.stringify({ teamId })}\n\n`)
+        })
+        const heartbeat = setInterval(() => {
+          res.write(': ping\n\n')
+        }, 15_000)
+        return await new Promise<void>((resolve) => {
+          req.on('close', () => {
+            clearInterval(heartbeat)
+            unsubscribe()
+            resolve()
+          })
+        })
+      },
+    }), 'agent-teams: activity events route')
 
     ctx.effect(() => webServer.register({
       kind: 'exact',

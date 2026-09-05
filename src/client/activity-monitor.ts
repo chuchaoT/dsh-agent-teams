@@ -189,6 +189,8 @@ export const ACTIVITY_PROBE_MS = 5000
 /** Host route serving live and archived team snapshots. */
 export const ACTIVITY_STATE_URL = '/plugins/dsh-agent-teams/state'
 export const ACTIVITY_HALT_URL = '/plugins/dsh-agent-teams/halt'
+/** Host SSE route that rings when a team mutation is recorded. */
+export const ACTIVITY_EVENTS_URL = '/plugins/dsh-agent-teams/events'
 
 interface ActivityFetchResponse {
   readonly ok: boolean
@@ -211,6 +213,13 @@ export interface ActivityPollingRuntime {
   readonly cancel?: (timer: unknown) => void
   readonly publishSnapshots?: (update: Partial<ActivitySnapshots>) => void
   readonly settleTargets?: (keys: ReadonlySet<string>) => void
+  /**
+   * Subscribe to host mutation signals (SSE). The returned unsubscribe must
+   * close the connection. Defaults to an EventSource on the host events
+   * route; anything unusable (no EventSource in the host, auth mismatch)
+   * degrades to the probe-only cadence.
+   */
+  readonly connectEvents?: (onNotify: () => void) => () => void
 }
 
 /** Handle returned by one current-session polling loop. */
@@ -219,6 +228,32 @@ export interface ActivityPollingController {
   readonly firstTick: Promise<void>
   /** Idempotently stop the timer and abort the current request. */
   stop(): void
+}
+
+/** Default EventSource-based change trigger; falls back to a no-op when unavailable. */
+export function connectDefaultTeamEvents(onNotify: () => void): () => void {
+  if (typeof EventSource === 'undefined') return () => {}
+  let closed = false
+  let source: EventSource | undefined
+  try {
+    source = new EventSource(ACTIVITY_EVENTS_URL)
+    source.addEventListener('changed', () => { onNotify() })
+    // The browser auto-reconnects on transient errors. A permanent auth
+    // failure would hot-loop; a short backoff probe keeps worst-case latency
+    // at the probe cadence either way, so a closed connection is acceptable.
+    source.addEventListener('error', () => {
+      if (source?.readyState === EventSource.CLOSED && !closed) {
+        source = undefined
+      }
+    })
+  } catch {
+    return () => {}
+  }
+  return () => {
+    closed = true
+    source?.close()
+    source = undefined
+  }
 }
 
 /**
@@ -250,6 +285,7 @@ export function startActivityPolling(
   const cancel = runtime.cancel ?? ((timer) => { clearInterval(timer as ReturnType<typeof setInterval>) })
   const publishSnapshots = runtime.publishSnapshots ?? updateActivitySnapshots
   const settleTargets = runtime.settleTargets ?? settleActivityMonitorTargets
+  const connectEvents = runtime.connectEvents ?? connectDefaultTeamEvents
   let cancelled = false
   let inFlight = false
   // Explicit card targets are demanded work: start at the live cadence. A
@@ -324,11 +360,19 @@ export function startActivityPolling(
   }
   const firstTick = tick()
   if (timer === undefined) timer = schedule(() => { void tick() }, intervalMs())
+  // The SSE channel only rings the bell: each mutation trigger refetches the
+  // durable snapshot immediately by joining the in-flight guard. Any failure
+  // is invisible — the probe cadence remains the correctness backstop.
+  const disconnectEvents = connectEvents(() => {
+    if (cancelled || inFlight) return
+    void tick()
+  })
   return {
     firstTick,
     stop: () => {
       if (cancelled) return
       cancelled = true
+      disconnectEvents()
       controller?.abort()
       cancel(timer)
     },

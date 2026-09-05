@@ -23,6 +23,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionEventMap } from '@deepseek-ai/dsh-session/types'
 import type { AgentTeamsEventType } from './event-types.ts'
 import { createSessionHost, captainSessionOf as hostCaptainSessionOf } from './host/session-host.ts'
+import { teamChangeBus } from './host/team-events.ts'
 
 /** Re-export the resolved-captain helper (kept for compatible imports). */
 export const captainSessionOf = hostCaptainSessionOf
@@ -54,6 +55,11 @@ export function appendTeamEvent(
   audit?: TeamEventAuditScope,
 ): void {
   recorder.appendEvent(ctx, session, type, data, audit)
+  if (audit !== undefined) {
+    // The event bus drives the panel's incremental refresh: any recorded
+    // mutation should wake connected panels for that team.
+    teamChangeBus.notify(audit.teamId)
+  }
 }
 
 /**
@@ -69,4 +75,5 @@ export function appendAuditedTeamEvent(
   teamId: string,
 ): void {
   recorder.appendEvent(ctx, session, type, data, { stateRoot, teamId })
+  teamChangeBus.notify(teamId)
 }
