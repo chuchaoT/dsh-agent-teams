@@ -221,12 +221,19 @@ async function requireParticipantTeamWithRoot(
   const roots = new Set<string>([workspace])
   const captainWorkspace = captainWorkspaceOf(ctx, caller)
   if (captainWorkspace !== undefined) roots.add(captainWorkspace)
-  // Some hosts/mocks expose only get(); list() is optional for the scan.
+  // Some hosts/mocks expose only get(); list() is optional for the scan and
+  // may itself be broken at runtime (older hosts implement a different
+  // registry shape - e.g. rc.1's list() reads an unprovided storage store).
+  // A broken list() must degrade to the remaining roots, never break a tool.
   const listAgents = (ctx.agents as unknown as { list?: () => Agent[] }).list
   if (typeof listAgents === 'function') {
-    for (const agent of listAgents()) {
-      const cwd = agent.session.header.cwd
-      if (cwd !== undefined) roots.add(cwd)
+    try {
+      for (const agent of listAgents()) {
+        const cwd = agent.session.header.cwd
+        if (cwd !== undefined) roots.add(cwd)
+      }
+    } catch (error: unknown) {
+      ctx.logger.warn(`agent-teams: agent list() unavailable for workspace scan (${String(error)}); using remaining roots`)
     }
   }
   roots.add(process.cwd())
