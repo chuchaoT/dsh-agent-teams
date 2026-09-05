@@ -702,6 +702,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         enum: ['required', 'automatic'],
         description: 'required stages the plan for explicit user review; automatic starts immediately. Defaults to automatic for API compatibility.',
       },
+      budget_usd: { type: 'number', description: 'Optional run budget in USD; once telemetry cost reaches it, dispatch pauses and the captain is notified once.' },
     },
     output: {
       schema: {
@@ -760,6 +761,9 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
               members: [],
               tasks: [],
               taskSeq: 0,
+              ...args.budget_usd !== undefined && Number.isFinite(args.budget_usd) && args.budget_usd >= 0
+                ? { budgetUsd: args.budget_usd }
+                : {},
               ...staged ? { phase: 'staged' as const, planReviewState: 'awaiting_review' as const } : {},
             }
             await createTeamDir(stateRoot, state)

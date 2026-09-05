@@ -261,6 +261,17 @@ export interface ModelAttribution {
   costUsd: number
 }
 
+/**
+ * Whether a run has spent the whole budget (or more). An unset/negative/
+ * non-finite budget never trips; a zero budget trips at the first cent
+ * spent, and zero spend never trips even against a zero budget.
+ */
+export function budgetExceeded(costUsd: number, budgetUsd: number | undefined): boolean {
+  if (budgetUsd === undefined || !Number.isFinite(budgetUsd) || budgetUsd < 0) return false
+  if (!Number.isFinite(costUsd) || costUsd < 0) return false
+  return costUsd > 0 && costUsd >= budgetUsd
+}
+
 /** Aggregates produced by {@link totalsOf}. */
 export interface TelemetryTotals {
   /** Distinct attempts (deduped, `attempt_finished` preferred). */

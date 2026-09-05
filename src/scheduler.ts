@@ -19,14 +19,17 @@ import { join } from 'node:path'
 import { deliverToMember } from './members.ts'
 import {
   acknowledgeMailbox,
+  appendMailbox,
   appendTeamTelemetry,
   beginTaskAttempt,
   CAPTAIN_KEY,
   claimMailboxDelivery,
+  createMessage,
   findTeamByParticipant,
   invalidateTaskAttempt,
   processRuntimeId,
   readTeam,
+  readTeamTelemetry,
   readUnreadMailbox,
   releaseMailboxDelivery,
   unsatisfiedDependencies,
@@ -40,7 +43,7 @@ import {
   resumeAttempt,
   type AttemptDisposition,
 } from './attempts.ts'
-import { createTelemetryRecord } from './telemetry.ts'
+import { createTelemetryRecord, budgetExceeded, totalsOf, type RunTelemetryRecord } from './telemetry.ts'
 import {
   pruneMemory,
   readMemoryEntries,
@@ -395,6 +398,33 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
       await serializeMember(queueKey, async () => {
         let team = await readTeam(stateRoot, teamId)
         if (team === undefined || team.halted === true || team.phase === 'staged') return
+        // Budget gate: once telemetry cost reaches the configured budget,
+        // dispatch pauses (no member wake-ups, no mailbox fallback turns).
+        // The captain is notified once; raising the budget or archiving the
+        // team are the human's next steps.
+        if (team.budgetUsd !== undefined) {
+          const budget = team.budgetUsd
+          const records = await readTeamTelemetry(stateRoot, teamId).catch(() => [])
+          const cost = totalsOf(records as RunTelemetryRecord[]).totalCostUsd
+          if (budgetExceeded(cost, budget)) {
+            if (team.budgetWarned !== true) {
+              team.budgetWarned = true
+              await withTeamLock(teamLockKey(stateRoot, team.id), async () => {
+                const warnable = await readTeam(stateRoot, team.id)
+                if (warnable === undefined || warnable.budgetWarned === true) return
+                warnable.budgetWarned = true
+                await writeTeam(stateRoot, warnable)
+                await appendMailbox(stateRoot, team.id, CAPTAIN_KEY, createMessage(
+                  CAPTAIN_KEY,
+                  CAPTAIN_KEY,
+                  `Run budget of $${budget.toFixed(2)} (spent $${cost.toFixed(2)}) is exhausted; scheduling is paused. Ask the user to raise the budget, or end the team (agent_teams_delete).`,
+                ))
+              })
+            }
+            ctx.logger.warn(`agent-teams: budget exceeded for ${teamId} ($${cost.toFixed(2)} >= $${budget.toFixed(2)}); scheduling paused`)
+            return
+          }
+        }
         const captain = liveCaptain(ctx, team.captainSessionId, suppliedCaptain)
         if (captain === undefined) return
         let member = team.members.find(candidate => candidate.name === memberName && candidate.status !== 'removed')

@@ -293,4 +293,8 @@ export interface TeamState {
   reviewPolicy?: ReviewPolicy
   /** Set when an automatic review/repair loop hits its configured ceiling. */
   escalated?: boolean
+  /** Optional USD run budget; dispatch pauses once telemetry cost reaches it. */
+  budgetUsd?: number
+  /** Set once the budget exhaustion notice has been delivered to the captain. */
+  budgetWarned?: boolean
 }

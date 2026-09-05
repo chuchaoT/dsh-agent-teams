@@ -63,6 +63,24 @@ are limited to documented semantics.
 - Approval state: `awaiting` → `approved` (dispatchable) / `rejected`
   (re-approved later possible). Terminal tasks reject approval comments.
 
+## Run budget gate
+
+- `agent_teams_create({ budget_usd })` records a per-run USD budget on the
+  team. The scheduler pauses dispatch (member wake-ups and mailbox fallback
+  turns included) once telemetry cost reaches the budget (`budgetExceeded`,
+  in `src/telemetry.ts` — zero spend never trips, zero budget trips at the
+  first cent).
+- The captain is notified exactly once (`budgetWarned`); raising the budget
+  or ending the team are the human's next steps. Cost currently sits at 0
+  until token accounting lands in `attempt_finished` records; the gate is
+  wired and testable now.
+
+## DSH 0.1.3 adapter
+
+See `docs/dsh-0.1.3-adapter.md` for the breaking-change map (SessionHandle,
+async `agentLoop.create()`, session lock, session v2) and the migration
+steps. The `src/host/` facade is the migration boundary.
+
 ## Known boundaries
 
 - Team state remains file-backed; a *single* writer process is assumed.
