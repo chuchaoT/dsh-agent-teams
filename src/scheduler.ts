@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { deliverToMember } from './members.ts'
 import {
   acknowledgeMailbox,
+  appendTeamTelemetry,
   beginTaskAttempt,
   CAPTAIN_KEY,
   claimMailboxDelivery,
@@ -39,6 +40,7 @@ import {
   resumeAttempt,
   type AttemptDisposition,
 } from './attempts.ts'
+import { createTelemetryRecord } from './telemetry.ts'
 import type { TeamMember, TeamState, TeamTask } from './types.ts'
 
 /** Per-dependency output cap in the assignment prompt. */
@@ -88,6 +90,9 @@ export interface DispatchTicket {
   readonly acceptance?: readonly string[]
   readonly verify?: readonly string[]
   readonly reviewedTaskId?: string
+  /** Resolved route captured at dispatch (for telemetry attribution). */
+  readonly provider?: string
+  readonly model?: string
 }
 
 function taskProfileSeedId(task: TeamTask): string | undefined {
@@ -441,6 +446,8 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
             ...task.acceptance === undefined ? {} : { acceptance: task.acceptance },
             ...task.verify === undefined ? {} : { verify: task.verify },
             ...task.reviewedTaskId === undefined ? {} : { reviewedTaskId: task.reviewedTaskId },
+            provider: currentMember.activeProvider ?? currentMember.provider,
+            model: currentMember.activeModel ?? currentMember.model,
             dependencyOutputs: collectCompletedDependencyOutputs(
               fresh.tasks,
               task.id,
@@ -457,7 +464,25 @@ export function installTeamScheduler(ctx: Context, config: SchedulerConfig): Tea
           assignmentPrompt(ticket, config.stateDir, team.id),
           new AbortController().signal,
         )
-        if (accepted) return
+        if (accepted) {
+          // Observability: the dispatch is the moment an attempt becomes
+          // observable to the team. Measurements are best-effort; a telemetry
+          // failure must never surface as a scheduling error.
+          appendTeamTelemetry(stateRoot, team.id, createTelemetryRecord({
+            kind: 'attempt_started',
+            teamId: team.id,
+            taskId: ticket.taskId,
+            attemptId: ticket.attemptId,
+            memberName: ticket.memberName,
+            ...ticket.provider === undefined ? {} : { provider: ticket.provider },
+            ...ticket.model === undefined ? {} : { model: ticket.model },
+            queuedAt: Date.now(),
+            startedAt: Date.now(),
+          })).catch((error: unknown) => {
+            ctx.logger.warn(`agent-teams: telemetry attempt_started failed for ${ticket.taskId}: ${String(error)}`)
+          })
+          return
+        }
 
         // Roll back only our exact failed dispatch. A concurrent captain
         // handoff has already changed the capability and wins.

@@ -49,6 +49,49 @@ const MAILBOX_DELIVERY_LEASE_MS = 60_000
 const RETIRED_MEMBERS_FILE = 'retired-members.json'
 /** Append-only per-team audit event log (plugin-owned, host-independent truth). */
 export const TEAM_EVENT_LOG = 'events.jsonl'
+/** Append-only per-team run telemetry log (attempts, queues, gates, fallbacks). */
+export const TEAM_TELEMETRY_LOG = 'telemetry.jsonl'
+
+/**
+ * Append one run-telemetry record to the team's append-only telemetry log.
+ * Telemetry is observational: a failed append must never fail the operation
+ * that produced the measurement, so callers `catch` and log.
+ */
+export async function appendTeamTelemetry(
+  stateRoot: string,
+  teamId: string,
+  record: unknown,
+): Promise<void> {
+  const entry = {
+    ts: Date.now(),
+    teamId,
+    ...(typeof record === 'object' && record !== null ? record as Record<string, unknown> : { record }),
+  }
+  await mkdir(stateRoot, { recursive: true })
+  await appendFile(join(stateRoot, teamId, TEAM_TELEMETRY_LOG), `${JSON.stringify(entry)}\n`, 'utf8')
+}
+
+/** Read the complete telemetry log for one team (torn tail lines skipped). */
+export async function readTeamTelemetry(stateRoot: string, teamId: string): Promise<unknown[]> {
+  try {
+    const raw = await readFile(join(stateRoot, teamId, TEAM_TELEMETRY_LOG), 'utf8')
+    const entries: unknown[] = []
+    for (const line of raw.split(/\r?\n/)) {
+      if (line.trim() === '') continue
+      try {
+        entries.push(JSON.parse(line) as unknown)
+      } catch {
+        continue
+      }
+    }
+    return entries
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw error
+  }
+}
 
 /**
  * One durable audit record. The plugin-owned event log is the authoritative

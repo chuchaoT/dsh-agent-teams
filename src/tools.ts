@@ -21,7 +21,9 @@ import { appendAuditedTeamEvent, captainSessionOf } from './events.ts'
 import {
   acknowledgeMailbox,
   appendMailbox,
+  appendTeamTelemetry,
   archiveTeamDir,
+  readTeamTelemetry,
   beginTaskAttempt,
   CAPTAIN_KEY,
   createMessage,
@@ -80,6 +82,7 @@ import {
   writeArtifactFile,
   type ArtifactKind,
 } from './artifacts.ts'
+import { createTelemetryRecord, summarizeTelemetry, type RunTelemetryRecord } from './telemetry.ts'
 import { installTeamScheduler } from './scheduler.ts'
 import { resolveTeamProfile } from './profiles.ts'
 
@@ -1751,6 +1754,37 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
           ))
         }
         await writeTeam(stateRoot, fresh)
+        // Run telemetry (best-effort): every terminal update closes the
+        // attempt measurement; a verdict additionally records a gate result.
+        if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+          const now = Date.now()
+          const durationMs = task.attemptStartedAt === undefined ? undefined : now - task.attemptStartedAt
+          appendTeamTelemetry(stateRoot, fresh.id, createTelemetryRecord({
+            kind: 'attempt_finished',
+            teamId: fresh.id,
+            taskId: task.id,
+            ...task.attemptId === undefined ? {} : { attemptId: task.attemptId },
+            ...task.assignee === undefined ? {} : { memberName: task.assignee },
+            ...task.attemptStartedAt === undefined ? {} : { startedAt: task.attemptStartedAt },
+            finishedAt: now,
+            ...durationMs === undefined ? {} : { durationMs },
+          })).catch((error: unknown) => {
+            ctx.logger.warn(`agent-teams: telemetry attempt_finished failed for ${task.id}: ${String(error)}`)
+          })
+          if (task.verdict !== undefined) {
+            appendTeamTelemetry(stateRoot, fresh.id, createTelemetryRecord({
+              kind: 'gate_result',
+              teamId: fresh.id,
+              taskId: task.id,
+              ...task.attemptId === undefined ? {} : { attemptId: task.attemptId },
+              ...task.assignee === undefined ? {} : { memberName: task.assignee },
+              gateVerdict: task.verdict,
+              finishedAt: now,
+            })).catch((error: unknown) => {
+              ctx.logger.warn(`agent-teams: telemetry gate_result failed for ${task.id}: ${String(error)}`)
+            })
+          }
+        }
         appendAuditedTeamEvent(ctx, captainSessionOf(ctx, fresh.captainSessionId, caller.session), 'agent-teams/task-updated', {
           teamId: fresh.id,
           taskId: task.id,
@@ -1949,6 +1983,10 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         findings_open: (task.findings ?? []).filter((finding) => finding.resolved !== true).length,
         ...task.profileSeedId === undefined ? {} : { seed_id: task.profileSeedId },
         ...task.output !== undefined ? { output: task.output } : {},
+        ...task.evidence === undefined ? {} : { evidence_count: task.evidence.length },
+        ...task.artifacts === undefined || task.artifacts.length === 0
+          ? {}
+          : { artifact_ids: task.artifacts.map((artifact) => artifact.artifactId) },
       }))
       const mailboxWarnings: string[] = []
       let mailboxWarningCount = 0
@@ -1991,6 +2029,8 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
       const deliveryCheck = canDeclareDelivery(team)
       const delivery = { ok: deliveryCheck.ok, blockers: [...deliveryCheck.blockers] }
       const loop = describeQualityLoop(team)
+      const telemetryRecords = await readTeamTelemetry(stateRoot, team.id).catch(() => [])
+      const telemetrySummary = summarizeTelemetry(telemetryRecords as RunTelemetryRecord[])
       const result = {
         team_id: team.id,
         team_name: team.name,
@@ -2003,6 +2043,7 @@ export function registerAgentTeamsTools(ctx: Context, config: ToolsConfig): Agen
         deliverable: loop.deliverable,
         coverage,
         delivery,
+        telemetry_summary: telemetrySummary,
         ...team.profile === undefined ? {} : {
           profile: {
             name: team.profile.name,

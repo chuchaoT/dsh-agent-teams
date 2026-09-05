@@ -21,6 +21,8 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { join } from 'node:path'
 import { acknowledgeMailbox, appendMailbox, CAPTAIN_KEY, createMessage, readRetiredMemberIds, readTeamSync, readTeam, releaseMailboxDelivery, withTeamLock, writeTeam } from './state.ts'
 import { appendAuditedTeamEvent, captainSessionOf } from './events.ts'
+import { appendTeamTelemetry } from './state.ts'
+import { createTelemetryRecord } from './telemetry.ts'
 import { TERMINAL_TASK_STATUSES, type TeamMember, type TeamState, type TeamTask } from './types.ts'
 
 /** Persona snapshot of a profile protocol; the full text lives on team.json. */
@@ -240,10 +242,23 @@ async function updateFallbackState(
     if (team === undefined) return
     const member = team.members.find(candidate => candidate.name === memberName)
     if (member === undefined) return
+    const previous = member.activeProvider === undefined
+      ? member.provider
+      : member.activeProvider
     member.activeProvider = fallback.provider
     member.activeModel = fallback.model
     member.fallbackActive = true
     await writeTeam(stateRoot, team)
+    appendTeamTelemetry(stateRoot, team.id, createTelemetryRecord({
+      kind: 'fallback_switch',
+      teamId: team.id,
+      memberName,
+      ...previous === undefined ? {} : { fallbackFrom: previous },
+      fallbackTo: `${fallback.provider}/${fallback.model}`,
+      startedAt: Date.now(),
+    })).catch((error: unknown) => {
+      ctx.logger.warn(`agent-teams: telemetry fallback_switch failed for ${memberName}: ${String(error)}`)
+    })
   })
   void ctx
 }

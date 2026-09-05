@@ -13,9 +13,10 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { memberActivity } from './members.ts'
 import {
-  CAPTAIN_KEY, listArchivedTeamIds, readArchivedTeam, readUnreadMailbox, readTeam,
+  CAPTAIN_KEY, listArchivedTeamIds, readArchivedTeam, readTeam, readTeamTelemetry, readUnreadMailbox,
   taskDepthsById, taskVisualState,
 } from './state.ts'
+import { summarizeTelemetry, type RunTelemetryRecord } from './telemetry.ts'
 import type { MemberStatus, TeamState, TeamTask } from './types.ts'
 
 /** Visual task state for the activity panel. */
@@ -53,6 +54,10 @@ export interface TeamActivityTask {
   readonly kind?: string
   readonly round?: number
   readonly verdict?: string
+  readonly evidenceCount?: number
+  readonly artifactIds?: readonly string[]
+  readonly priority?: 'low' | 'normal' | 'high'
+  readonly deadlineAt?: number
 }
 
 /** One captain-inbox preview row. */
@@ -75,6 +80,8 @@ export interface TeamActivitySnapshot {
   readonly tasks: readonly TeamActivityTask[]
   readonly messageCount: number
   readonly captainInbox: readonly TeamActivityMessage[]
+  /** Durable run telemetry summary (attempts, durations, gates, fallbacks). */
+  readonly telemetrySummary?: string
 }
 
 /** Snapshot projection switches for live and archived teams. */
@@ -163,6 +170,9 @@ export async function assembleTeamSnapshot(
     }
   })
   const captainInbox = await readUnreadMailbox(stateRoot, state.id, CAPTAIN_KEY)
+  const telemetrySummary = await readTeamTelemetry(stateRoot, state.id)
+    .then((records) => summarizeTelemetry(records as RunTelemetryRecord[]))
+    .catch(() => '')
   return {
     workspace,
     teamId: state.id,
@@ -188,6 +198,12 @@ export async function assembleTeamSnapshot(
       ...task.kind === undefined ? {} : { kind: task.kind },
       ...task.round === undefined ? {} : { round: task.round },
       ...task.verdict === undefined ? {} : { verdict: task.verdict },
+      ...task.evidence === undefined ? {} : { evidenceCount: task.evidence.length },
+      ...task.artifacts === undefined || task.artifacts.length === 0
+        ? {}
+        : { artifactIds: task.artifacts.map((artifact) => artifact.artifactId) },
+      ...task.priority === undefined ? {} : { priority: task.priority },
+      ...task.deadlineAt === undefined ? {} : { deadlineAt: task.deadlineAt },
     })),
     messageCount: captainInbox.length
       + members.reduce((count, member) => count + member.unread, 0),
@@ -195,6 +211,7 @@ export async function assembleTeamSnapshot(
       from: message.from,
       content: message.content,
     })),
+    ...telemetrySummary === '' ? {} : { telemetrySummary },
   }
 }
 
