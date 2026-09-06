@@ -54,7 +54,7 @@ real host run to accept).
 | npm line reality check | done | alpha.3/4/5 published; `0.1.3-alpha.1` is GitHub-only (npm 404). |
 | 0.1.2-alpha.5 migration | done | `feat/dsh-0.1.2-alpha5` branch: 45 dep refs, `SubagentHost` dual-generation bridge, global failure observation fallback, `minimumReleaseAge` unblock. typecheck/build/verify green. |
 | Breaking-change map | done | `docs/dsh-0.1.3-adapter.md` (SessionHandle / async agentLoop / session lock / session v2). |
-| Real-host e2e UI acceptance | external | Requires a live alpha.5 host run inside a DSH profile (user's machine is on rc.1). |
+| Real-host e2e UI acceptance | done | 真实 Web 宿主日常使用已验证（Windows 11 web profile 本地 link 本仓库）：面板审批、任务执行、归档 replay 可用；另见 README「验证基线」的 headless e2e 记录。 |
 
 **Note on "assessed"**: every assessed item was evaluated against the actual
 codebase and its failure modes, and the decision (keep file-based single-writer;

@@ -18,8 +18,8 @@
 | 分支 | 内容 | 状态 |
 | --- | --- | --- |
 | `main` | 上游主线（0.1.15 / Harness 0.1.2-alpha.2） | 跟踪上游 `origin/main` |
-| `feat/framework-hardening` | 13 笔硬化提交（见下） | 本地改造，未合并 |
-| `feat/dsh-0.1.2-alpha5` | **默认分支**：硬化 + alpha.5 迁移 + e2e 修复，共 18 笔 | 本地改造，未合并 |
+| `feat/framework-hardening` | 12 笔硬化提交（见下） | 本地改造，未合并 |
+| `feat/dsh-0.1.2-alpha5` | **默认分支**：硬化 + alpha.5 迁移 + e2e 修复，共 20 笔 | 本地改造，未合并 |
 
 ## 本 fork 与上游的差异
 
@@ -28,7 +28,7 @@
 - 按 alpha.5 的 API 面调整约 45 处依赖引用（如 `followup` → `sendMessage`、`registerContinuableSetup` 移除后的双代桥等），见 `docs/dsh-0.1.3-adapter.md`。
 - 运行时探测调用全部容错：探测到的能力在旧代宿主（如 rc.1）上可能形状不同，必须降级执行。
 
-### 2. 可靠性硬化（`feat/framework-hardening`，13 笔）
+### 2. 可靠性硬化（`feat/framework-hardening`，12 笔）
 
 - 持久化 attempt 生命周期 + attempt 策略模块（中途接管/重试时旧 attempt 先失效，杜绝晚期结果覆盖）
 - CPU 顶层操作：host 能力门面、持久审计日志、revision CAS 与跨进程锁
@@ -49,8 +49,9 @@
 
 ### 4. 验证基线
 
-- `pnpm typecheck` / `pnpm build` / `pnpm verify` 全部通过（21+ 组单测 + 20 余组 verify 脚本）。
+- `pnpm typecheck` / `pnpm build` / `pnpm verify` 全部通过（26 组 verify 脚本 + 100 余组单测）。
 - 真实 headless 验收（DSH 0.1.2-rc.1 宿主 + 独立 profile `agent-teams-e2e`，本地 link 本仓库）：2 成员并行执行 2 个无依赖任务，各自产出 artifact，归档 manifest 干净，`verifyArchivedRun ok=true`。
+- 真实 Web 宿主日常使用已验证（Windows 11 web profile 本地 link 本仓库）：面板审批/执行/归档 replay 全流程可用。
 
 ## 安装与使用
 
@@ -58,7 +59,7 @@
 
 ```bash
 # 以本地链接方式装进 profile（示例 web），然后重启 dsh web
-dsh plugin --profile web add @nanmicoder/dsh-agent-teams@link:D:/新建文件夹/dsh-agent-teams
+dsh plugin --profile web add @nanmicoder/dsh-agent-teams@link:D:/新建文件夹/dshPlugin/dsh-agent-teams
 
 # 源码改动后必须重新构建（插件入口是 lib/index.js，web 加载的是 lib 而非 src）
 pnpm build
